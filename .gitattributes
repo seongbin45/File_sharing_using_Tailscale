@@ -1,0 +1,6 @@
+# Windows script hosts are unreliable with LF-only line endings.
+# Force CRLF on checkout regardless of the platform doing the clone.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.vbs text eol=crlf
+*.xml text eol=crlf
