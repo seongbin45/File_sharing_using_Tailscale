@@ -108,8 +108,22 @@ git clone 이나 붙여넣기로 만든 파일은 UTF-8 이라 그대로 등록�
 동시에 `__USERID__` 자리표시자를 실제 계정으로 치환합니다.
 
 ```cmd
-powershell -NoProfile -Command "$u = $env:USERDOMAIN + '\' + $env:USERNAME; $x = (Get-Content 'C:\Scripts\ts_backup_task.xml' -Raw) -replace '__USERID__', $u; Set-Content -Path 'C:\Scripts\ts_backup_task.xml' -Value $x -Encoding Unicode"
+powershell -NoProfile -Command "$u = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name; $x = (Get-Content 'C:\Scripts\ts_backup_task.xml' -Raw) -replace '__USERID__', $u; Set-Content -Path 'C:\Scripts\ts_backup_task.xml' -Value $x -Encoding Unicode"
 ```
+
+계정명은 `WindowsIdentity` 에서 가져옵니다. `%USERDOMAIN%` 은 도메인에 가입되지 않은 PC에서
+`WORKGROUP` 을 반환하고, `WORKGROUP\dicia` 같은 값은 실재하지 않는 계정이라 등록 시
+`계정 이름과 보안 식별자 사이에 매핑이 이루어지지 않았습니다` 오류가 납니다.
+
+치환 결과 확인 (변환 후에는 UTF-16 이라 `findstr` 은 경고만 내고 아무것도 못 찾습니다):
+
+```cmd
+powershell -NoProfile -Command "Select-String -Path 'C:\Scripts\ts_backup_task.xml' -Pattern 'UserId'"
+```
+
+`<UserId>PC이름\계정명</UserId>` 이 두 줄 나와야 합니다. 값이 잘못됐다면 원본을 다시
+복사한 뒤(`copy /y C:\Scripts\src\scripts\ts_backup_task.xml C:\Scripts\`) 치환을 다시 하십시오.
+이미 치환된 파일에 다시 치환을 걸어도 `__USERID__` 가 남아 있지 않아 아무 일도 일어나지 않습니다.
 
 ---
 
