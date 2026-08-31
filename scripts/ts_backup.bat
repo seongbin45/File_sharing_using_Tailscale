@@ -240,8 +240,18 @@ exit /b 0
 
 rem --------------------------------------------------------------------------
 rem :Log <quoted-message>
+rem
 rem Redirection comes first so no trailing space is written.
+rem
+rem The message is parked in a variable and emitted with delayed expansion.
+rem Writing "echo ... %~1" directly would substitute the text while the line
+rem is still being parsed, so a ">" inside the message (as in "sent x -> host")
+rem becomes a real redirection operator and the entry silently lands in a file
+rem named after whatever followed it instead of in the log. Delayed expansion
+rem happens after redirection has already been resolved, so !MSG! is inert.
 rem --------------------------------------------------------------------------
 :Log
->>"%LOG_FILE%" echo [%DATE% %TIME%] %~1
-exit /b 0
+setlocal
+set "MSG=%~1"
+>>"%LOG_FILE%" echo([%DATE% %TIME%] !MSG!
+endlocal & exit /b 0
