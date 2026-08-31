@@ -151,20 +151,24 @@ schtasks /create /tn "TSBackup_Resume" /tr "wscript.exe C:\Scripts\ts_backup_hid
 
 ## 6단계 — 등록 검증
 
+`schtasks /query /v` 는 표시 언어를 따라가고 이벤트 트리거를 `N/A` 로만 보여주므로,
+확인은 PowerShell 쪽이 정확합니다.
+
 ```cmd
-schtasks /query /tn "TailscaleProjectBackup" /v /fo list
+powershell -NoProfile -Command "(Get-ScheduledTask -TaskName 'TailscaleProjectBackup').Triggers | Format-List"
 ```
 
-- `Scheduled Task State` 가 `Enabled`
-- `Next Run Time` 이 1시간 이내
-- 트리거 3종이 모두 보이는지
+`TimeTrigger`(Repetition PT1H), `LogonTrigger`, `EventTrigger` 세 개가 나와야 합니다.
 
 ```cmd
 schtasks /run /tn "TailscaleProjectBackup"
-timeout /t 30
-schtasks /query /tn "TailscaleProjectBackup" /v /fo list | findstr /i "Last"
+timeout /t 90
+powershell -NoProfile -Command "Get-ScheduledTaskInfo -TaskName 'TailscaleProjectBackup' | Format-List LastRunTime, LastTaskResult, NextRunTime, NumberOfMissedRuns"
 type C:\TempBackup\backup.log
 ```
+
+`findstr /i "Last"` 같은 필터는 쓰지 마십시오. 한글 Windows 에서는 `마지막 결과` 로 출력되어
+아무것도 매칭되지 않습니다.
 
 - `Last Result` 가 `0` (`1` = 압축 실패, `2` = 전송 실패로 pending 보관)
 - **본체 모니터에 CMD 창이 뜨지 않아야 합니다** (VBS 래퍼가 하는 일)
