@@ -78,9 +78,14 @@ Windows PC 의 프로젝트 폴더들을 **자동으로, 한 번에 하나씩 �
 
 ## 문서
 
+이 저장소는 **보내는 쪽**과 **받는 쪽** 두 부분으로 이루어집니다. 아래 문서는 별도 표시가
+없으면 보내는 쪽 이야기입니다.
+
 | 문서 | 언제 보는가 |
 |---|---|
-| [scripts/install.md](scripts/install.md) | **처음 설치할 때.** SSH(cmd) 명령 전문. 여기부터 시작하십시오 |
+| [scripts/install.md](scripts/install.md) | **보내는 쪽을 처음 설치할 때.** SSH(cmd) 명령 전문. 여기부터 시작하십시오 |
+| [docs/RECEIVER.md](docs/RECEIVER.md) | **받는 쪽.** 도착한 압축을 git 으로 관리하는 구조와 복원 방법 |
+| [scripts/receiver/install.md](scripts/receiver/install.md) | 받는 쪽 설치 절차 |
 | [docs/PORTING.md](docs/PORTING.md) | 다른 PC 나 다른 대상 폴더에 옮길 때. 고쳐야 할 값 전수 목록 |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | 뭔가 이상할 때. 증상 → 원인 → 조치 |
 | [docs/VERIFICATION.md](docs/VERIFICATION.md) | 실제로 동작하는지 근거가 궁금할 때, 코드를 고친 뒤 회귀 테스트할 때 |
@@ -336,11 +341,12 @@ rd /s /q C:\Scripts
 
 ## 범위 밖
 
-**수신 기기의 파일 정리는 이 스크립트가 하지 않습니다.** 파일명에 타임스탬프가 붙으므로
-덮어쓰기가 일어나지 않고, 매시간 실행이면 수신 기기에 하루 24개씩 누적됩니다.
-수신 측 보존 정리 로직은 별도로 구성해야 합니다.
+**보내는 쪽 스크립트는 수신 기기의 파일을 정리하지 않습니다.** 파일명에 타임스탬프가 붙어
+덮어쓰기가 일어나지 않으므로, 그대로 두면 수신 기기에 매시간 한 개씩 쌓입니다.
+받는 쪽에서 이를 풀어 git 으로 관리하고 zip 을 걷어내는 스크립트가
+[docs/RECEIVER.md](docs/RECEIVER.md) 에 있습니다.
 
-**수신 기기의 Taildrop 수신 준비**도 범위 밖입니다. 보내는 쪽이 성공 코드를 받아도 받는 쪽이
+**수신 기기의 Taildrop 수신 준비**는 여전히 범위 밖입니다. 보내는 쪽이 성공 코드를 받아도 받는 쪽이
 준비되어 있지 않으면 파일은 도착하지 않습니다. [docs/PORTING.md](docs/PORTING.md) 의
 "수신 기기 쪽 전제" 참조.
 
