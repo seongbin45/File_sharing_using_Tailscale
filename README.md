@@ -5,7 +5,14 @@
 
 `.env` 와 `.git` 이력은 백업 대상에 반드시 포함됩니다(기본값은 제외 폴더 없음).
 
-설치 절차는 [`scripts/install.md`](scripts/install.md) 를 따르십시오.
+## 문서
+
+| 문서 | 언제 보는가 |
+|---|---|
+| [scripts/install.md](scripts/install.md) | 처음 설치할 때. SSH(cmd) 명령 전문 |
+| [docs/PORTING.md](docs/PORTING.md) | 다른 PC 나 다른 대상 폴더에 옮길 때. 고쳐야 할 값 전수 목록 |
+| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | 뭔가 이상할 때. 증상 → 원인 → 조치 |
+| [docs/VERIFICATION.md](docs/VERIFICATION.md) | 코드를 고친 뒤. 무엇을 어디까지 검증했는지의 기록 |
 
 ---
 
@@ -43,6 +50,41 @@ C:\Users\DiCiA\backup_state.txt  마지막으로 백업한 폴더명
 **상태 파일을 전송 성공 후가 아니라 폴더 선정 직후에 갱신하는 이유**: 특정 폴더가 계속
 실패할 때 커서가 멈추면 나머지 프로젝트가 영원히 백업되지 않습니다. 실패분의 책임은
 `pending` 재시도 로직이 집니다.
+
+---
+
+## 백업 대상 범위
+
+한 회차에 압축되는 것은 정확히 이것입니다.
+
+```
+tar -a -c -f "C:\TempBackup\A1-1_Project_2026_08_30_16_43.zip" -C "C:\Users\DiCiA\PycharmProjects" "A1-1_Project"
+```
+
+즉 `BASE_DIR\<대상폴더>\` **이하 전부**입니다. 압축 파일 내부 경로가 `A1-1_Project/...` 로
+시작하므로, 풀면 프로젝트 폴더가 그대로 복원됩니다.
+
+**포함** — 제외 패턴이 비어 있으므로 그 폴더 안의 모든 것. `.git` 이력, `.env`,
+`venv`, `__pycache__`, `.idea`, `node_modules` 전부 들어갑니다.
+
+**제외** — 두 가지뿐입니다.
+
+1. `BASE_DIR` 바로 아래의 **낱개 파일**. 순환은 디렉터리만 훑습니다.
+   `dir /a-d "%BASE_DIR%"` 로 사각지대가 있는지 확인하십시오
+2. `BASE_DIR` 바로 아래의 **점으로 시작하는 폴더**(`PycharmProjects\.idea` 등).
+   프로젝트가 아니라 편집기 작업공간 설정이므로 한 회차를 낭비하지 않도록 건너뜁니다.
+   프로젝트 **안쪽**의 `.git`, `.idea` 는 그대로 포함됩니다
+
+`BASE_DIR` 아래의 모든 디렉터리가 순환 대상이며, 매 실행마다 하나씩 차례로 처리됩니다.
+한 바퀴를 다 돌면 첫 폴더로 돌아옵니다. **한 바퀴에 걸리는 시간 = 폴더 개수 × 실행 주기**
+입니다.
+
+```cmd
+dir /b /ad C:\Users\DiCiA\PycharmProjects | find /c /v ""
+```
+
+폴더를 새로 만들면 자동으로 순환에 합류하고, 삭제하면 커서가 첫 폴더로 되돌아가며
+자가 복구됩니다.
 
 ---
 
@@ -102,6 +144,77 @@ set "TAR_EXCLUDES=--exclude=*/venv/* --exclude=*/.venv/* --exclude=*/__pycache__
 
 ---
 
+## 운영
+
+### 상태 점검
+
+```cmd
+type C:\TempBackup\backup.log
+powershell -NoProfile -Command "Get-ScheduledTaskInfo -TaskName 'TailscaleProjectBackup' | Format-List LastRunTime, LastTaskResult, NextRunTime, NumberOfMissedRuns"
+```
+
+`LastTaskResult` 가 `0` 이고 `NumberOfMissedRuns` 가 늘지 않으면 정상입니다.
+표시 언어에 의존하는 `schtasks /query /v | findstr Last` 는 한글 Windows 에서 동작하지 않습니다.
+
+### 일시 중지 / 재개
+
+```cmd
+schtasks /change /tn "TailscaleProjectBackup" /disable
+schtasks /change /tn "TailscaleProjectBackup" /enable
+```
+
+### 즉시 한 회차 실행
+
+```cmd
+schtasks /run /tn "TailscaleProjectBackup"
+```
+
+### 특정 프로젝트를 다음 차례로 지정
+
+상태 파일에는 **마지막으로 처리한** 폴더명이 들어 있고, 다음 실행은 그 **다음** 폴더를
+집습니다. 따라서 원하는 폴더의 바로 앞 폴더명을 써 넣으면 됩니다. 순서는 `dir /b /ad` 기준입니다.
+
+```cmd
+dir /b /ad C:\Users\DiCiA\PycharmProjects
+>C:\Users\DiCiA\backup_state.txt echo 원하는폴더의_바로_앞_폴더명
+```
+
+첫 폴더부터 다시 시작하려면 상태 파일을 지우면 됩니다.
+
+```cmd
+del C:\Users\DiCiA\backup_state.txt
+```
+
+리디렉션을 `echo` **앞**에 두는 것에 유의하십시오. `echo 값 > 파일` 로 쓰면 값 뒤에 공백이
+붙어 다음 실행의 비교가 실패합니다.
+
+### 설정 변경
+
+`C:\Scripts\ts_backup.bat` 상단을 고칩니다. 셸에서 `set "TARGETS=..."` 를 해도 배치가
+실행 시 자기 값을 다시 설정하므로 반영되지 않습니다.
+
+```cmd
+powershell -NoProfile -Command "$p='C:\Scripts\ts_backup.bat'; $x=(Get-Content $p -Raw) -replace '기존값','새값'; Set-Content -Path $p -Value $x -Encoding ASCII"
+findstr /c:"set \"TARGETS=" C:\Scripts\ts_backup.bat
+```
+
+원복은 저장소 사본 재복사가 가장 확실합니다.
+
+```cmd
+copy /y C:\Scripts\src\scripts\ts_backup.bat C:\Scripts\
+```
+
+### 제거
+
+```cmd
+schtasks /delete /tn "TailscaleProjectBackup" /f
+rd /s /q C:\TempBackup
+del C:\Users\DiCiA\backup_state.txt
+rd /s /q C:\Scripts
+```
+
+---
+
 ## 설계 노트
 
 ### 스크립트 본문은 ASCII 전용
@@ -147,3 +260,16 @@ set "TAR_EXCLUDES=--exclude=*/venv/* --exclude=*/.venv/* --exclude=*/__pycache__
 **수신 기기의 파일 정리는 이 스크립트가 하지 않습니다.** 파일명에 타임스탬프가 붙으므로
 덮어쓰기가 일어나지 않고, 매시간 실행이면 수신 기기에 하루 24개씩 누적됩니다.
 수신 측 보존 정리 로직은 별도로 구성해야 합니다.
+
+**수신 기기의 Taildrop 수신 준비**도 범위 밖입니다. 보내는 쪽이 성공 코드를 받아도 받는 쪽이
+준비되어 있지 않으면 파일은 도착하지 않습니다. [docs/PORTING.md](docs/PORTING.md) 의
+"수신 기기 쪽 전제" 참조.
+
+---
+
+## 검증 상태
+
+실제 기기에서 압축·전송, 폴더 순환, 롤백, pending 재전송, 스케줄러 등록·실행까지 확인했습니다.
+창 숨김 동작과 절전 해제 트리거 등 물리 화면이나 장시간 관찰이 필요한 항목은 미검증으로
+남아 있습니다. 항목별 근거와 실제 로그는 [docs/VERIFICATION.md](docs/VERIFICATION.md) 에
+있습니다.
