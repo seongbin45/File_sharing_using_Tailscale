@@ -66,7 +66,7 @@ mkdir C:\Scripts -Force
 ## 3단계 — 설정 조정
 
 `C:\Scripts\ts_backup.bat` 상단의 `CONFIG` 블록을 자기 환경에 맞게 고칩니다.
-**최소한 `BASE_DIR`, `STATE_FILE`, `TARGETS` 세 개는 반드시 확인해야 합니다.**
+**최소한 `BASE_DIR`, `TARGETS`, `MIN_FREE_MB` 세 개는 반드시 확인해야 합니다.**
 각 값의 의미는 [README 의 설정 변수](../README.md#설정-변수), 이식 시 고칠 값 전체는
 [PORTING.md](../docs/PORTING.md) 를 보십시오.
 
@@ -85,7 +85,7 @@ powershell -NoProfile -Command "$p='C:\Scripts\ts_backup.bat'; $x=(Get-Content $
 이 설치 과정에서 가장 흔한 실수입니다.
 
 ```cmd
-powershell -NoProfile -Command "Select-String -Path 'C:\Scripts\ts_backup.bat' -Pattern '^set .(BASE_DIR|STATE_FILE|WORK_DIR|TARGETS)='"
+powershell -NoProfile -Command "Select-String -Path 'C:\Scripts\ts_backup.bat' -Pattern '^set .(BASE_DIR|WORK_DIR|MIN_FREE_MB|TARGETS)='"
 ```
 
 잘못 고쳤으면 원본을 다시 복사해 처음부터 하면 됩니다.
@@ -112,19 +112,20 @@ C:\Scripts\ts_backup.bat
 type C:\TempBackup\backup.log
 ```
 
-로그에 `archive ready, <바이트수> bytes` 와 `DRY_RUN=1 - skipping transfer` 가 나와야 합니다.
+로그에 `free space on work volume: <MB>`, `archive ready, <바이트수> bytes`,
+`DRY_RUN=1 - skipping transfer` 가 나와야 합니다.
 
-### 4-2. 순환
+### 4-2. 규모 판단
 
-```cmd
-C:\Scripts\ts_backup.bat
-C:\Scripts\ts_backup.bat
-for /f "delims=" %A in (C:\Users\DiCiA\backup_state.txt) do @echo [%A]
-```
+여기서 나온 **압축 크기와 압축에 걸린 시간**을 확인하십시오. 이 값이 하루 1회로
+감당 가능한지가 이 설계의 전제입니다.
 
-로그의 `target folder:` 가 실행마다 달라져야 하고, 상태 파일은 `[ProjectA]` 처럼
-**대괄호가 이름에 딱 붙어야** 합니다. `[ProjectA ]` 처럼 뒤에 공백이 보이면 순환이
-첫 폴더에 고착됩니다.
+전송 시간은 압축 크기를 관측 속도(약 7 MB/s)로 나눈 값이 대략의 기준입니다.
+6 GB 라면 15분 안팎입니다. 감당이 안 되면 `ts_backup_task.xml` 의 `<DaysInterval>` 을
+늘리거나 `TAR_EXCLUDES` 를 도입해야 합니다.
+
+작업 볼륨 여유 공간이 압축 하나를 담을 만큼 있는지도 함께 보십시오.
+`MIN_FREE_MB` 는 그 방어선입니다.
 
 ### 4-3. 실제 전송
 
@@ -206,7 +207,9 @@ schtasks /create /tn "TSBackup_Resume" /tr "wscript.exe C:\Scripts\ts_backup_hid
 powershell -NoProfile -Command "(Get-ScheduledTask -TaskName 'TailscaleProjectBackup').Triggers | Format-List"
 ```
 
-`TimeTrigger`(Repetition PT1H), `LogonTrigger`, `EventTrigger` 세 개가 나와야 합니다.
+`CalendarTrigger` 하나가 `StartBoundary` 04:00 · `DaysInterval` 1 로 나와야 합니다.
+보내는 쪽에는 부팅·절전 해제 트리거가 일부러 없습니다 — 한 회차가 무겁기 때문이며,
+그 역할은 `StartWhenAvailable` 이 대신합니다.
 
 ```cmd
 schtasks /run /tn "TailscaleProjectBackup"
@@ -229,6 +232,5 @@ type C:\TempBackup\backup.log
 ```cmd
 schtasks /delete /tn "TailscaleProjectBackup" /f
 rd /s /q C:\TempBackup
-del C:\Users\DiCiA\backup_state.txt
 rd /s /q C:\Scripts
 ```

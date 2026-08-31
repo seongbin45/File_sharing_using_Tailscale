@@ -29,15 +29,17 @@
 
 | 변수 | 예시 값 | 설명 |
 |---|---|---|
-| `BASE_DIR` | `C:\Users\DiCiA\PycharmProjects` | **필수 변경.** 순환 대상 폴더들의 부모 디렉터리 |
-| `STATE_FILE` | `C:\Users\DiCiA\backup_state.txt` | **필수 변경.** 순환 커서. 쓰기 권한이 있는 곳이면 어디든 무방 |
-| `WORK_DIR` | `C:\TempBackup` | 압축 파일 생성 위치. 대상 폴더 중 가장 큰 것보다 여유 공간이 있어야 함 |
+| `BASE_DIR` | `C:\Users\DiCiA\PycharmProjects` | **필수 변경.** 통째로 압축할 디렉터리 |
+| `WORK_DIR` | `C:\TempBackup` | 압축 파일 생성 위치. `BASE_DIR` 전체가 올라갈 여유 공간이 필요 |
+| `MIN_FREE_MB` | `10000` | 이보다 여유가 적으면 시작하지 않음. 대상 크기에 맞게 조정 |
 | `TARGETS` | `wisenesco-23031302 laptop-7gmpubqc ...` | **필수 변경.** 공백 구분, 순서가 곧 우선순위. `tailscale status` 의 이름과 정확히 일치해야 함 |
 | `PENDING_KEEP_DAYS` | `3` | 전송 실패분 보관 기한 |
-| `PENDING_KEEP_PER_PROJECT` | `1` | 프로젝트당 실패분 최대 개수 |
+| `PENDING_KEEP_COUNT` | `1` | 전송 실패분 최대 개수 |
 | `LOG_MAX_MB` | `5` | 로그 회전 기준 |
 | `TAR_EXCLUDES` | (비어 있음) | 압축 제외 패턴. 아래 참고 |
 | `DRY_RUN` | `0` | `1` 이면 압축만 하고 전송하지 않음. 최초 테스트용 |
+
+순환 커서가 없으므로 상태 파일도 없습니다. 매 회차가 서로 독립적입니다.
 
 ### 제외 패턴을 쓰려면
 
@@ -59,17 +61,21 @@ set "TAR_EXCLUDES=--exclude=*/venv/* --exclude=*/.venv/* --exclude=*/__pycache__
 | `<Arguments>` | `"C:\Scripts\ts_backup_hidden.vbs"` | **스크립트를 다른 폴더에 둘 경우 변경** |
 | `<Description>` | 대상 경로가 문장에 박혀 있음 | 선택. 작업 스케줄러 목록에 표시됨 |
 | `<URI>` | `\TailscaleProjectBackup` | 작업 이름을 바꾸려면 `schtasks /tn` 값과 함께 변경 |
-| `<StartBoundary>` | `2026-01-01T00:00:00` | 과거 시각이면 무엇이든 무방. 여기에 매시간 반복이 얹힘 |
-| `<Interval>` | `PT1H` | 실행 주기. `PT30M`, `PT6H` 등 ISO 8601 기간 |
+| `<StartBoundary>` | `2026-01-01T04:00:00` | **실행 시각.** 날짜 부분은 과거이기만 하면 무방하고, 시각 부분이 매일 언제 도는지를 정합니다 |
+| `<DaysInterval>` | `1` | 며칠에 한 번 돌지 |
 
 ### 트리거를 바꾸려면
 
-- **매시간 주기 변경** → `CalendarTrigger` 의 `<Interval>`
-- **부팅 시 실행 제거** → `LogonTrigger` 블록 삭제
-- **절전 해제 감지 제거** → `EventTrigger` 블록 삭제
+- **실행 시각 변경** → `<StartBoundary>` 의 시각 부분
+- **이틀에 한 번** → `<DaysInterval>` 을 `2` 로
 
-`ONSTART`(시스템 시작 시)는 쓰지 않습니다. 비관리자 세션에서 등록이 거부되기 쉽고,
-사용자 컨텍스트 작업은 어차피 로그온 전에 실행되지 않아 `LogonTrigger` 와 실질적으로 같습니다.
+보내는 쪽에는 부팅·절전 해제 트리거가 **일부러 없습니다.** 한 회차가 대상 전체를 압축·전송
+하므로(6 GB 기준 20분) 로그온이나 절전 해제마다 한 번 더 도는 것은 부담만 큽니다.
+`StartWhenAvailable` 이 그 역할을 대신해, 지정 시각에 PC 가 꺼져 있었다면 다음에 켜졌을 때
+한 번 보충 실행됩니다.
+
+`ONSTART`(시스템 시작 시)도 쓰지 않습니다. 비관리자 세션에서 등록이 거부되기 쉽고,
+사용자 컨텍스트 작업은 어차피 로그온 전에 실행되지 않습니다.
 
 ---
 
@@ -93,15 +99,18 @@ set "TAR_EXCLUDES=--exclude=*/venv/* --exclude=*/.venv/* --exclude=*/__pycache__
 ## 이식 절차 요약
 
 ```
-1. 전제 조건 확인            (tar / wscript / tailscale / powershell)
+1. 전제 조건 확인            (tar / wscript / tailscale / powershell / 여유 공간)
 2. 파일 3개 배치             (bat, vbs, xml 을 같은 폴더에)
-3. ts_backup.bat CONFIG 수정 (최소 BASE_DIR, STATE_FILE, TARGETS)
-4. DRY_RUN=1 로 압축만 테스트
+3. ts_backup.bat CONFIG 수정 (최소 BASE_DIR, TARGETS, MIN_FREE_MB)
+4. DRY_RUN=1 로 압축만 테스트 → 압축 크기와 소요 시간 확인
 5. DRY_RUN=0 으로 전송 테스트 → 수신 기기 도착 확인
 6. 롤백 테스트               (1순위를 가짜 이름으로)
 7. XML 치환 후 schtasks 등록
 8. schtasks /run 으로 즉시 실행 → LastTaskResult 확인
 ```
+
+4단계에서 나온 압축 크기와 전송 시간이 하루 1회로 감당 가능한지 먼저 판단하십시오.
+감당이 안 되면 `<DaysInterval>` 을 늘리거나 `TAR_EXCLUDES` 를 도입해야 합니다.
 
 각 단계의 구체적인 명령은 [install.md](../scripts/install.md) 에 있습니다.
 검증 시 무엇을 근거로 판정하는지는 [VERIFICATION.md](VERIFICATION.md) 를 참고하십시오.

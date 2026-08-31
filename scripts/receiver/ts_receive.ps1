@@ -3,9 +3,18 @@
 
     Receiving side of the Tailscale project backup.
 
-    Taildrop drops "<Project>_<yyyy_MM_dd_HH_mm>.zip" into the watch directory.
-    This script ingests each archive into a git-managed directory, one commit
-    per archive, and tags the repository whenever a full cycle completes.
+    Taildrop drops "<Root>_<yyyy_MM_dd_HH_mm>.zip" into the watch directory,
+    where <Root> is the whole project directory archived in one piece. Each
+    archive is therefore a complete, self-consistent snapshot.
+
+    This script unpacks each one into a git-managed directory, commits it and
+    tags the commit with the archive's timestamp. Every commit is a full
+    restore point.
+
+    Every $ResetAfterDays the management repository is started over: the
+    current generation is moved aside as a plain dated folder with no .git,
+    and a fresh repository begins. This bounds how far the repository can
+    grow without ever excluding anything from the backup.
 
     Run it periodically from Task Scheduler. See install.md.
     Requires PowerShell 5.1 and git on PATH.
@@ -19,32 +28,34 @@ param()
 # Where Taildrop leaves the archives. Scanned non-recursively.
 $WatchDir = Join-Path $env:USERPROFILE 'Downloads'
 
-# Git-managed directory holding the unpacked projects.
+# Git-managed directory holding the unpacked snapshot.
 # The name stays fixed; points in time are marked with git tags.
 $RepoDir = Join-Path $WatchDir 'PycharmProjects'
 
+# Where a generation goes when the repository is reset. Keep it on the same
+# volume as $RepoDir so the move is a rename rather than a 6 GB copy.
+$ArchiveRoot = Join-Path $env:USERPROFILE 'PycharmProjects_Archive'
+
+# Reset the repository this many days after the last reset.
+$ResetAfterDays = 90
+
+# How many archived generations to keep. 0 = keep them all.
+# Each one is a full plain copy, so budget the size of one snapshot per
+# generation. Nothing is ever deleted automatically while this is 0.
+$KeepArchiveGenerations = 0
+
 # Staging and log live outside the repository so they are never committed.
-# Keep this on the same volume as $RepoDir: moving a freshly unpacked project
-# into place is then a rename instead of a full copy.
+# Keep this on the same volume as $RepoDir.
 $WorkDir = 'C:\TempReceive'
 
 # An archive is ignored until it has been untouched for this long, so a
-# transfer still in progress is never ingested half-written.
-$MinAgeSeconds = 30
+# transfer still in progress is never ingested half-written. A 6 GB Taildrop
+# transfer takes minutes, so this wants to be generous.
+$MinAgeSeconds = 120
 
 # $true  -> processed archives move to $WatchDir\_processed
 # $false -> processed archives are deleted (the content is in git already)
 $KeepProcessedZip = $false
-
-# When to tag a point in time.
-#   'cycle'   every known project has been updated since the previous tag
-#   'sameday' every known project's last backup falls on the same date
-$TagMode = 'cycle'
-
-# How many projects the sender has. 0 = learn it from what arrives.
-# Set a real number to stop the very first tag from firing early, while the
-# management directory is still filling up for the first time.
-$ExpectedProjectCount = 0
 
 $LogMaxMB = 5
 
@@ -58,6 +69,7 @@ $ProcessedDir = Join-Path $WatchDir '_processed'
 $RejectedDir  = Join-Path $WatchDir '_rejected'
 $StateFile    = Join-Path $RepoDir '.ts_state.json'
 $SummaryFile  = Join-Path $RepoDir 'Day_count.txt'
+$RepoName     = Split-Path $RepoDir -Leaf
 
 # Exit code reported to Task Scheduler as Last Result.
 #   0 nothing to do, or everything ingested
@@ -113,7 +125,6 @@ function Invoke-Native {
 }
 
 function Invoke-Git {
-    <# Runs git inside $RepoDir. Returns the exit code, logs any output. #>
     param([Parameter(Mandatory)][string[]]$GitArgs, [switch]$Quiet)
     $result = Invoke-Native -Command 'git' -Arguments (@('-C', $RepoDir) + $GitArgs)
     if (-not $Quiet) {
@@ -125,7 +136,6 @@ function Invoke-Git {
 }
 
 function Get-GitOutput {
-    <# Returns git's stdout as a string array, or $null when git failed. #>
     param([Parameter(Mandatory)][string[]]$GitArgs)
     $result = Invoke-Native -Command 'git' -Arguments (@('-C', $RepoDir) + $GitArgs)
     if ($result.Code -ne 0) { return $null }
@@ -161,7 +171,6 @@ function Remove-Tree {
 }
 
 function Test-FileReady {
-    <# True once the file has stopped changing and can be opened exclusively. #>
     param([Parameter(Mandatory)][System.IO.FileInfo]$File)
     if (((Get-Date) - $File.LastWriteTime).TotalSeconds -lt $MinAgeSeconds) { return $false }
     try {
@@ -176,16 +185,26 @@ function Test-FileReady {
 # ------------------------------ state -------------------------------------
 # .ts_state.json is the machine-readable source of truth. The Day_count.txt
 # files are human-readable renderings of it, regenerated on every ingest -
-# they have to be, because a project folder is wiped and repopulated each
-# time and would otherwise lose its counter.
+# they have to be, because the working tree is wiped and repopulated from
+# each snapshot and would otherwise lose its counters.
 
 function Read-State {
-    $state = @{ cycle_count = 0; last_tag = ''; projects = @{} }
+    $state = @{
+        snapshot_count = 0
+        last_snapshot  = ''
+        last_reset     = ''
+        reset_count    = 0
+        projects       = @{}
+    }
     if (-not (Test-Path -LiteralPath $StateFile)) { return $state }
     try {
         $raw = Get-Content -LiteralPath $StateFile -Raw | ConvertFrom-Json
-        if ($null -ne $raw.cycle_count) { $state.cycle_count = [int]$raw.cycle_count }
-        if ($null -ne $raw.last_tag)    { $state.last_tag    = [string]$raw.last_tag }
+        foreach ($k in @('snapshot_count', 'reset_count')) {
+            if ($null -ne $raw.$k) { $state[$k] = [int]$raw.$k }
+        }
+        foreach ($k in @('last_snapshot', 'last_reset')) {
+            if ($null -ne $raw.$k) { $state[$k] = [string]$raw.$k }
+        }
         if ($null -ne $raw.projects) {
             foreach ($p in $raw.projects.PSObject.Properties) {
                 $state.projects[$p.Name] = @{
@@ -227,20 +246,21 @@ function Write-ProjectDayCount {
 
 function Write-SummaryDayCount {
     param([Parameter(Mandatory)][hashtable]$State)
-    $tag = if ($State.last_tag) { $State.last_tag } else { '(none)' }
     $lines = @(
-        "PycharmProjects backup summary",
-        "updated      : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')",
-        "cycle_count  : $($State.cycle_count)",
-        "last_tag     : $tag",
-        "projects     : $($State.projects.Count)",
+        "$RepoName backup summary",
+        "updated        : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')",
+        "snapshot_count : $($State.snapshot_count)",
+        "last_snapshot  : $(if ($State.last_snapshot) { $State.last_snapshot } else { '(none)' })",
+        "last_reset     : $(if ($State.last_reset) { $State.last_reset } else { '(none)' })",
+        "reset_count    : $($State.reset_count)",
+        "projects       : $($State.projects.Count)",
         "",
-        ('{0,-32} {1,6}  {2,-18} {3}' -f 'project', 'count', 'last_backup', 'first_backup'),
-        ('-' * 84)
+        ('{0,-40} {1,6}  {2,-18} {3}' -f 'project', 'count', 'last_backup', 'first_backup'),
+        ('-' * 92)
     )
     foreach ($name in ($State.projects.Keys | Sort-Object)) {
         $e = $State.projects[$name]
-        $lines += ('{0,-32} {1,6}  {2,-18} {3}' -f $name, $e.count, $e.last, $e.first)
+        $lines += ('{0,-40} {1,6}  {2,-18} {3}' -f $name, $e.count, $e.last, $e.first)
     }
     Write-TextLines -Path $SummaryFile -Lines $lines
 }
@@ -254,9 +274,8 @@ function Initialize-Repo {
     if (-not (Test-Path -LiteralPath (Join-Path $RepoDir '.git'))) {
         Write-Log "initialising git repository at $RepoDir"
         if ((Invoke-Git @('init')) -ne 0) { return $false }
-        # These are backups: store bytes verbatim, never normalise line endings.
-        Write-TextLines -Path (Join-Path $RepoDir '.gitattributes') -Lines @('* -text')
     }
+    Write-GitAttributes
     Invoke-Git @('config', 'core.autocrlf', 'false') -Quiet | Out-Null
     Invoke-Git @('config', 'core.longpaths', 'true')  -Quiet | Out-Null
     if (-not (Get-GitOutput @('config', 'user.name'))) {
@@ -266,6 +285,12 @@ function Initialize-Repo {
         Invoke-Git @('config', 'user.email', 'ts-receive@localhost') -Quiet | Out-Null
     }
     return $true
+}
+
+function Write-GitAttributes {
+    # These are backups: store bytes verbatim, never normalise line endings.
+    # Recreated after every ingest, because the working tree is wiped first.
+    Write-TextLines -Path (Join-Path $RepoDir '.gitattributes') -Lines @('* -text')
 }
 
 function Rename-NestedGitDirs {
@@ -308,9 +333,94 @@ function Expand-Zip {
     }
 }
 
+# ------------------------------- reset ------------------------------------
+
+function Invoke-RepoReset {
+    <#
+        Moves the current generation out of the way as a plain dated folder
+        with no .git, then starts a fresh repository. The archived copy is an
+        ordinary snapshot of files - it carries no history of its own, which
+        is the point: it is there to be read, not to be committed to.
+    #>
+    param([Parameter(Mandatory)][hashtable]$State)
+
+    $stamp = if ($State.last_snapshot) { $State.last_snapshot } else { Get-Date -Format 'yyyy_MM_dd_HH_mm' }
+    New-Item -ItemType Directory -Path $ArchiveRoot -Force | Out-Null
+    $dest = Join-Path $ArchiveRoot ("{0}_{1}" -f $RepoName, $stamp)
+    if (Test-Path -LiteralPath $dest) {
+        $dest = "{0}__{1}" -f $dest, (Get-Date -Format 'HHmmss')
+    }
+
+    Write-Log "reset: moving current generation to $dest"
+    Move-Item -LiteralPath $RepoDir -Destination $dest
+
+    $archivedGit = Join-Path $dest '.git'
+    if (Test-Path -LiteralPath $archivedGit) {
+        Write-Log "reset: dropping history from the archived generation"
+        if (-not (Remove-Tree -Path $archivedGit)) {
+            Write-Log "reset: WARN could not remove $archivedGit"
+        }
+    }
+
+    New-Item -ItemType Directory -Path $RepoDir -Force | Out-Null
+    if (-not (Initialize-Repo)) {
+        throw "reset: could not initialise the fresh repository"
+    }
+
+    # Counters carry across a reset; anything tied to the discarded history
+    # does not. The projects table is rebuilt by the next ingest anyway.
+    $State.reset_count = [int]$State.reset_count + 1
+    $State.last_reset  = (Get-Date).ToString('o')
+    Write-State -State $State
+
+    Write-Log "reset: generation $($State.reset_count) archived, fresh repository ready"
+    Remove-OldGenerations
+}
+
+function Remove-OldGenerations {
+    if ($KeepArchiveGenerations -le 0) { return }
+    if (-not (Test-Path -LiteralPath $ArchiveRoot)) { return }
+    $gens = @(Get-ChildItem -LiteralPath $ArchiveRoot -Directory |
+              Where-Object { $_.Name -like "$RepoName`_*" } |
+              Sort-Object Name -Descending)
+    if ($gens.Count -le $KeepArchiveGenerations) { return }
+    foreach ($old in $gens[$KeepArchiveGenerations..($gens.Count - 1)]) {
+        Write-Log "reset: removing old generation $($old.Name)"
+        Remove-Tree -Path $old.FullName | Out-Null
+    }
+}
+
+function Test-ResetDue {
+    param([Parameter(Mandatory)][hashtable]$State)
+    if ($ResetAfterDays -le 0) { return $false }
+    if (-not $State.last_reset) { return $false }
+    # Nothing committed yet means nothing worth archiving.
+    if (-not (Get-GitOutput @('rev-parse', '--verify', 'HEAD'))) { return $false }
+    try {
+        $due = ([datetime]$State.last_reset).AddDays($ResetAfterDays)
+    } catch {
+        Write-Log "WARN: unreadable last_reset, resetting the clock"
+        return $false
+    }
+    return ((Get-Date) -ge $due)
+}
+
 # ------------------------------ ingest ------------------------------------
 
-function Import-Archive {
+function Clear-RepoWorkingTree {
+    <# Empties the repository of everything except .git itself. #>
+    foreach ($item in @(Get-ChildItem -LiteralPath $RepoDir -Force)) {
+        if ($item.Name -eq '.git') { continue }
+        if ($item.PSIsContainer) {
+            if (-not (Remove-Tree -Path $item.FullName)) { return $false }
+        } else {
+            Remove-Item -LiteralPath $item.FullName -Force
+        }
+    }
+    return $true
+}
+
+function Import-Snapshot {
     <# $true ingested, $false retry next run, $null permanently rejected. #>
     param(
         [Parameter(Mandatory)][System.IO.FileInfo]$Zip,
@@ -329,92 +439,73 @@ function Import-Archive {
             Write-Log "    REJECT: archive does not contain exactly one top-level folder"
             return $null
         }
-        $top = $tops[0]
-        $project = $top.Name
+        $root = $tops[0]
 
-        $renamed = Rename-NestedGitDirs -Root $top.FullName
-        if ($renamed -gt 0) { Write-Log "    renamed $renamed nested .git -> .git_archived" }
+        $renamed = Rename-NestedGitDirs -Root $root.FullName
+        Write-Log "    renamed $renamed nested .git -> .git_archived"
 
-        # Carry the counter forward before the old copy is discarded.
-        $entry = $State.projects[$project]
-        if (-not $entry) { $entry = @{ count = 0; first = $Stamp; last = $Stamp } }
-
-        $dest = Join-Path $RepoDir $project
-        if (Test-Path -LiteralPath $dest) {
-            if (-not (Remove-Tree -Path $dest)) {
-                Write-Log "    FAIL: could not clear $dest"
-                return $false
-            }
+        if (-not (Clear-RepoWorkingTree)) {
+            Write-Log "    FAIL: could not clear the working tree"
+            return $false
         }
-        Move-Item -LiteralPath $top.FullName -Destination $dest
 
-        $entry.count = [int]$entry.count + 1
-        $entry.last  = $Stamp
-        if (-not $entry.first) { $entry.first = $Stamp }
-        $State.projects[$project] = $entry
+        # The snapshot's contents become the repository's contents, so the
+        # tree does not gain a redundant folder level.
+        foreach ($item in @(Get-ChildItem -LiteralPath $root.FullName -Force)) {
+            Move-Item -LiteralPath $item.FullName -Destination (Join-Path $RepoDir $item.Name)
+        }
+        Write-GitAttributes
 
-        Write-ProjectDayCount -Project $project -Entry $entry
+        # Rebuild the project table from what this snapshot actually contains.
+        # A project deleted upstream is absent here and drops out, which is
+        # the behaviour a whole-folder snapshot is supposed to give.
+        $present = @(Get-ChildItem -LiteralPath $RepoDir -Directory -Force |
+                     Where-Object { $_.Name -ne '.git' })
+        $projects = @{}
+        foreach ($dir in $present) {
+            $entry = $State.projects[$dir.Name]
+            if (-not $entry) { $entry = @{ count = 0; first = $Stamp; last = $Stamp } }
+            $entry.count = [int]$entry.count + 1
+            $entry.last  = $Stamp
+            if (-not $entry.first) { $entry.first = $Stamp }
+            $projects[$dir.Name] = $entry
+            Write-ProjectDayCount -Project $dir.Name -Entry $entry
+        }
+        $State.projects = $projects
+        $State.snapshot_count = [int]$State.snapshot_count + 1
+        $State.last_snapshot = $Stamp
+        if (-not $State.last_reset) { $State.last_reset = (Get-Date).ToString('o') }
+
         Write-SummaryDayCount -State $State
         Write-State -State $State
 
+        Write-Log "    staging $($present.Count) projects, this may take a while"
         if ((Invoke-Git @('add', '-A')) -ne 0) {
             Write-Log "    FAIL: git add"
             return $false
         }
         if (-not (Test-RepoDirty)) {
             Write-Log "    nothing changed, no commit"
-            return $true
+        } else {
+            if ((Invoke-Git @('commit', '-m', "snapshot $Stamp")) -ne 0) {
+                Write-Log "    FAIL: git commit"
+                return $false
+            }
+            Write-Log "    committed: snapshot $Stamp"
         }
-        $message = "$project @ $Stamp"
-        if ((Invoke-Git @('commit', '-m', $message)) -ne 0) {
-            Write-Log "    FAIL: git commit"
-            return $false
+
+        # Every commit is a full snapshot, so every one gets a tag.
+        if (@(Get-GitOutput @('tag', '-l', $Stamp) | Where-Object { $_.Trim() }).Count) {
+            Write-Log "    tag $Stamp already exists"
+        } elseif ((Invoke-Git @('tag', '-a', $Stamp, '-m', "snapshot $Stamp")) -eq 0) {
+            Write-Log "    tagged $Stamp"
+        } else {
+            Write-Log "    WARN: could not create tag $Stamp"
         }
-        Write-Log "    committed: $message"
         return $true
     } finally {
         Remove-Tree -Path $stage | Out-Null
     }
-}
-
-function Update-CycleTag {
-    param([Parameter(Mandatory)][hashtable]$State)
-
-    if ($State.projects.Count -eq 0) { return }
-    if ($ExpectedProjectCount -gt 0 -and $State.projects.Count -lt $ExpectedProjectCount) {
-        Write-Log "cycle: $($State.projects.Count)/$ExpectedProjectCount projects known, waiting"
-        return
-    }
-
-    $stamps = @($State.projects.Values | ForEach-Object { $_.last })
-    $newest = @($stamps | Sort-Object)[-1]
-
-    if ($TagMode -eq 'sameday') {
-        $days = @($stamps | ForEach-Object { $_.Substring(0, 10) } | Sort-Object -Unique)
-        if ($days.Count -ne 1) { return }
-    } else {
-        foreach ($s in $stamps) {
-            if ($State.last_tag -and ($s -le $State.last_tag)) { return }
-        }
-    }
-
-    if (@(Get-GitOutput @('tag', '-l', $newest) | Where-Object { $_.Trim() }).Count) {
-        Write-Log "cycle: tag $newest already exists, skipping"
-        return
-    }
-    if ((Invoke-Git @('tag', '-a', $newest, '-m', "full cycle complete ($TagMode)")) -ne 0) {
-        Write-Log "cycle: FAILED to create tag $newest"
-        return
-    }
-    $State.cycle_count = [int]$State.cycle_count + 1
-    $State.last_tag = $newest
-    Write-SummaryDayCount -State $State
-    Write-State -State $State
-    Invoke-Git @('add', '-A') | Out-Null
-    if (Test-RepoDirty) {
-        Invoke-Git @('commit', '-m', "cycle $($State.cycle_count) complete @ $newest") | Out-Null
-    }
-    Write-Log "cycle $($State.cycle_count) complete, tagged $newest"
 }
 
 # ------------------------------- main -------------------------------------
@@ -441,7 +532,7 @@ try {
         exit 1
     }
 
-    $pattern = '^(?<project>.+)_(?<stamp>\d{4}_\d{2}_\d{2}_\d{2}_\d{2})$'
+    $pattern = '^(?<name>.+)_(?<stamp>\d{4}_\d{2}_\d{2}_\d{2}_\d{2})$'
     $candidates = @(
         Get-ChildItem -LiteralPath $WatchDir -File -Filter '*.zip' -ErrorAction SilentlyContinue |
             Where-Object { $_.BaseName -match $pattern } |
@@ -456,6 +547,13 @@ try {
 
     $state = Read-State
 
+    # Reset before ingesting, not after: the fresh repository is then filled
+    # by this run instead of sitting empty until the next archive arrives.
+    if (Test-ResetDue -State $state) {
+        Write-Log "reset: $ResetAfterDays days since $($state.last_reset)"
+        Invoke-RepoReset -State $state
+    }
+
     foreach ($zip in $candidates) {
         if (-not (Test-FileReady -File $zip)) {
             Write-Log "skipping $($zip.Name) - still being written or too fresh"
@@ -466,7 +564,7 @@ try {
 
         # One bad archive must not abort the whole run.
         try {
-            $result = Import-Archive -Zip $zip -Stamp $stamp -State $state
+            $result = Import-Snapshot -Zip $zip -Stamp $stamp -State $state
         } catch {
             Write-Log "    ERROR: $($_.Exception.Message)"
             $result = $false
@@ -491,8 +589,6 @@ try {
             $script:ExitCode = 2
         }
     }
-
-    Update-CycleTag -State $state
 }
 catch {
     Write-Log "FATAL: $($_.Exception.Message)"

@@ -13,26 +13,26 @@ type C:\TempBackup\backup.log
 
 ## 실행은 되는데 결과가 이상함
 
-### 매번 같은 폴더만 백업됨
+### 여유 공간 부족으로 시작조차 하지 않음
 
-상태 파일 값이 실제 폴더명과 일치하지 않는 것입니다. 값 뒤에 공백이 붙었는지 확인하십시오.
+로그에 `FATAL: need at least <N> MB free, refusing to start` 가 찍힙니다.
+의도된 동작입니다 — 디스크를 채운 채 반쯤 만들어진 압축을 남기는 것보다 건너뛰는 편이
+낫습니다. `WORK_DIR` 볼륨을 비우거나, 대상 크기에 맞게 `MIN_FREE_MB` 를 조정하십시오.
 
-```cmd
-for /f "delims=" %A in (C:\Users\DiCiA\backup_state.txt) do @echo [%A]
-```
+압축 하나가 통째로 올라갈 공간이 필요합니다.
 
-`[A1-1_Project]` 처럼 대괄호가 딱 붙어야 정상입니다. `[A1-1_Project ]` 라면 상태 파일을
-`echo %VAR% > file` 형태로 기록한 코드가 어딘가 남아 있는 것입니다. 리디렉션을 앞에 두어야
-합니다 (`>"%STATE_FILE%" echo !TARGET_FOLDER!`).
+### 한 회차가 너무 오래 걸림
 
-로그의 `target folder: X (previous: Y)` 에서 `previous` 가 항상 비어 있다면 상태 파일을
-읽지 못하는 것이니 `STATE_FILE` 경로와 쓰기 권한을 확인하십시오.
+대상 전체를 압축·전송하므로 규모에 비례합니다. 관측 기준으로 압축은 약 44 MB/s,
+Taildrop 전송은 약 7 MB/s 입니다(6 GB 기준 압축 2.4분 + 전송 15분).
 
-### 특정 폴더가 백업 대상에서 빠짐
+줄이려면 셋 중 하나입니다.
 
-- **이름이 점으로 시작** — 의도된 동작입니다. 최상위 점 폴더(`.idea` 등)는 건너뜁니다
-- **폴더가 아니라 파일** — `BASE_DIR` 바로 아래의 낱개 파일은 순환 대상이 아닙니다.
-  `dir /a-d "%BASE_DIR%"` 로 확인하십시오
+- `ts_backup_task.xml` 의 `<DaysInterval>` 을 늘려 빈도를 낮춤
+- `TAR_EXCLUDES` 로 재생성 가능한 폴더를 제외 (`venv`, `node_modules`, `__pycache__`)
+- 대상에서 대용량 산출물을 애초에 다른 곳으로 옮김
+
+`.git` 과 `.env` 는 제외하지 마십시오. 백업의 목적 자체가 사라집니다.
 
 ### 로그에 `sent ... -> 기기명` 줄이 없는데 전송은 성공함
 

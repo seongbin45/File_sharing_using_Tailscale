@@ -1,8 +1,12 @@
 @echo off
 rem ==========================================================================
 rem  ts_backup.bat
-rem  Cyclic backup of PycharmProjects subfolders, sent over Tailscale Taildrop.
-rem  One project folder per run. Falls back through a list of target devices.
+rem  Archives the whole project root in one piece and sends it over Tailscale
+rem  Taildrop, falling back through a list of target devices.
+rem
+rem  Every run produces a complete, self-consistent snapshot. Run it once a
+rem  day: at roughly 6 GB and ~7 MB/s of Taildrop throughput a run takes on
+rem  the order of twenty minutes, so anything more frequent is not sensible.
 rem
 rem  ASCII ONLY. Do not put non-ASCII characters in this file: the console
 rem  code page and the file encoding will disagree and corrupt the log.
@@ -11,29 +15,32 @@ rem ==========================================================================
 setlocal enabledelayedexpansion
 
 rem ---------------------------- CONFIG --------------------------------------
-rem Root folder holding the project folders (one is backed up per run).
+rem The directory that gets archived, whole, on every run.
 set "BASE_DIR=C:\Users\DiCiA\PycharmProjects"
 
-rem Remembers which project folder was handled last.
-set "STATE_FILE=C:\Users\DiCiA\backup_state.txt"
-
-rem Working directory: archives are built here, log lives here.
+rem Working directory: the archive is built here, the log lives here.
+rem Needs room for a full archive of BASE_DIR.
 set "WORK_DIR=C:\TempBackup"
+
+rem Refuse to start unless the work volume has at least this many megabytes
+rem free. A half-written archive that fills the disk is worse than a skipped
+rem run.
+set "MIN_FREE_MB=10000"
 
 rem Target devices, in fallback order. Space separated, no trailing colon.
 set "TARGETS=wisenesco-23031302 laptop-7gmpubqc desktop-dvj3pqk desktop-0g92n63"
 
 rem Retention for archives that could not be sent to ANY target.
 set "PENDING_KEEP_DAYS=3"
-set "PENDING_KEEP_PER_PROJECT=1"
+set "PENDING_KEEP_COUNT=1"
 
 rem Log rotates once it grows past this many megabytes (one .1 backup kept).
 set "LOG_MAX_MB=5"
 
-rem Folders to leave out of the archive. Empty = archive everything
-rem (.git and .env are preserved by design).
-rem Example:
-rem   set "TAR_EXCLUDES=--exclude=*/venv/* --exclude=*/__pycache__/* --exclude=*/node_modules/*"
+rem Paths to leave out of the archive. Empty = archive everything, which is
+rem the intent here: .git history and .env files must survive.
+rem Example, if the archive ever has to be trimmed:
+rem   set "TAR_EXCLUDES=--exclude=*/venv/* --exclude=*/__pycache__/*"
 set "TAR_EXCLUDES="
 
 rem 1 = build the archive but skip the actual transfer (for testing).
@@ -44,10 +51,17 @@ set "PENDING_DIR=%WORK_DIR%\pending"
 set "LOG_FILE=%WORK_DIR%\backup.log"
 
 rem Exit code reported to Task Scheduler as "Last Result":
-rem   0 = archived and delivered (or nothing to do)
+rem   0 = archived and delivered
 rem   1 = fatal, no usable archive was produced
 rem   2 = archive was produced but no target accepted it (parked in pending)
 set "RC=0"
+
+rem Split BASE_DIR into its parent and its own name. tar is then pointed at
+rem the parent and told to archive the one directory, so the archive unpacks
+rem into a folder of the same name instead of scattering its contents.
+for %%A in ("%BASE_DIR%") do set "BASE_NAME=%%~nxA"
+for %%A in ("%BASE_DIR%") do set "BASE_PARENT=%%~dpA"
+if "!BASE_PARENT:~-1!"=="\" set "BASE_PARENT=!BASE_PARENT:~0,-1!"
 
 if not exist "%WORK_DIR%"    mkdir "%WORK_DIR%"
 if not exist "%PENDING_DIR%" mkdir "%PENDING_DIR%"
@@ -58,6 +72,12 @@ call :Log "=== run start ==="
 rem Archives left behind by a previous interrupted run (pending/ is untouched).
 del /f /q "%WORK_DIR%\*.zip" >nul 2>&1
 
+if not exist "%BASE_DIR%\" (
+    call :Log "FATAL: BASE_DIR does not exist: %BASE_DIR%"
+    set "RC=1"
+    goto :End
+)
+
 rem ---------------------------------------------------------------- timestamp
 set "DATETIME="
 for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "Get-Date -Format yyyy_MM_dd_HH_mm"`) do set "DATETIME=%%I"
@@ -67,64 +87,29 @@ if not defined DATETIME (
     goto :End
 )
 
+rem --------------------------------------------------------------- disk check
+set "FREE_MB="
+for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "[int]((Get-Item -LiteralPath '%WORK_DIR%').PSDrive.Free / 1MB)"`) do set "FREE_MB=%%I"
+if defined FREE_MB (
+    call :Log "free space on work volume: !FREE_MB! MB"
+    if !FREE_MB! lss %MIN_FREE_MB% (
+        call :Log "FATAL: need at least %MIN_FREE_MB% MB free, refusing to start"
+        set "RC=1"
+        goto :End
+    )
+) else (
+    call :Log "WARN: could not determine free space, continuing"
+)
+
 rem ------------------------------------------------- retry previous failures
 call :FlushPending
 call :PrunePending
 
-rem ------------------------------------------------------ pick target folder
-set "LAST_FOLDER="
-if exist "%STATE_FILE%" (
-    for /f "usebackq tokens=* delims= " %%A in ("%STATE_FILE%") do (
-        if not defined LAST_FOLDER set "LAST_FOLDER=%%A"
-    )
-)
-
-:TrimTrailingSpace
-if defined LAST_FOLDER (
-    if "!LAST_FOLDER:~-1!"==" " (
-        set "LAST_FOLDER=!LAST_FOLDER:~0,-1!"
-        goto :TrimTrailingSpace
-    )
-)
-
-rem Dot folders (.idea, .git, ...) sitting directly under BASE_DIR are tooling
-rem state, not projects. Including them would waste a whole turn of the cycle.
-set "TARGET_FOLDER="
-set "FIRST_FOLDER="
-set "TAKE_NEXT=0"
-for /d %%F in ("%BASE_DIR%\*") do (
-    set "NAME="
-    set "NAME=%%~nxF"
-    if not "!NAME:~0,1!"=="." (
-        if not defined FIRST_FOLDER set "FIRST_FOLDER=!NAME!"
-        if "!TAKE_NEXT!"=="1" (
-            if not defined TARGET_FOLDER set "TARGET_FOLDER=!NAME!"
-        )
-        if /i "!NAME!"=="!LAST_FOLDER!" set "TAKE_NEXT=1"
-    )
-)
-
-rem No entry recorded, or the recorded folder is gone / was the last one:
-rem wrap around to the first folder.
-if not defined TARGET_FOLDER set "TARGET_FOLDER=%FIRST_FOLDER%"
-
-if not defined TARGET_FOLDER (
-    call :Log "no project folders found under %BASE_DIR% - nothing to do"
-    goto :End
-)
-
-call :Log "target folder: !TARGET_FOLDER! (previous: !LAST_FOLDER!)"
-
-rem Advance the cursor NOW, not after a successful transfer. If a folder
-rem keeps failing, the remaining projects must still get their turn; failed
-rem archives are the responsibility of pending/.
->"%STATE_FILE%" echo !TARGET_FOLDER!
-
 rem ------------------------------------------------------------------ archive
-set "ZIP_FILE=%WORK_DIR%\!TARGET_FOLDER!_!DATETIME!.zip"
+set "ZIP_FILE=%WORK_DIR%\!BASE_NAME!_!DATETIME!.zip"
 call :Log "creating archive: !ZIP_FILE!"
 
-tar -a -c -f "!ZIP_FILE!" %TAR_EXCLUDES% -C "%BASE_DIR%" "!TARGET_FOLDER!" >>"%LOG_FILE%" 2>&1
+tar -a -c -f "!ZIP_FILE!" %TAR_EXCLUDES% -C "!BASE_PARENT!" "!BASE_NAME!" >>"%LOG_FILE%" 2>&1
 set "TAR_RC=%ERRORLEVEL%"
 
 rem bsdtar returns 1 for warnings (locked files such as a git index or an
@@ -216,12 +201,12 @@ exit /b 0
 rem --------------------------------------------------------------------------
 rem :PrunePending
 rem Retention for pending/: drop anything older than PENDING_KEEP_DAYS, then
-rem keep at most PENDING_KEEP_PER_PROJECT archives per project folder.
-rem The project name is recovered by stripping the _yyyy_MM_dd_HH_mm suffix.
+rem keep at most PENDING_KEEP_COUNT archives. Each one is a full snapshot, so
+rem holding more than the newest is rarely worth the disk.
 rem Date arithmetic is done in PowerShell - cmd cannot do it reliably.
 rem --------------------------------------------------------------------------
 :PrunePending
-powershell -NoProfile -Command "$d='%PENDING_DIR%'; if (Test-Path -LiteralPath $d) { Get-ChildItem -LiteralPath $d -Filter *.zip -File | Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-%PENDING_KEEP_DAYS%) } | Remove-Item -Force -ErrorAction SilentlyContinue; Get-ChildItem -LiteralPath $d -Filter *.zip -File | Group-Object { $_.BaseName -replace '_\d{4}(_\d{2}){4}$','' } | ForEach-Object { $_.Group | Sort-Object LastWriteTime -Descending | Select-Object -Skip %PENDING_KEEP_PER_PROJECT% | Remove-Item -Force -ErrorAction SilentlyContinue } }" >>"%LOG_FILE%" 2>&1
+powershell -NoProfile -Command "$d='%PENDING_DIR%'; if (Test-Path -LiteralPath $d) { Get-ChildItem -LiteralPath $d -Filter *.zip -File | Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-%PENDING_KEEP_DAYS%) } | Remove-Item -Force -ErrorAction SilentlyContinue; Get-ChildItem -LiteralPath $d -Filter *.zip -File | Sort-Object LastWriteTime -Descending | Select-Object -Skip %PENDING_KEEP_COUNT% | Remove-Item -Force -ErrorAction SilentlyContinue }" >>"%LOG_FILE%" 2>&1
 exit /b 0
 
 rem --------------------------------------------------------------------------

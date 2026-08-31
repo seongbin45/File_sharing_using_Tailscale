@@ -49,22 +49,25 @@ copy /y C:\Scripts\src\scripts\receiver\ts_receive_task.xml    C:\Scripts\
 
 ## 3단계 — 설정 조정
 
-기본값 그대로도 동작합니다. 바꿀 만한 것은 두 가지입니다.
+기본값 그대로도 동작합니다. 확인할 만한 것은 세 가지입니다.
 
-**보내는 쪽 프로젝트 개수를 알고 있다면** `$ExpectedProjectCount` 에 넣으십시오.
-그러지 않으면 관리 디렉터리가 채워지는 동안 첫 태그가 이르게 찍힙니다.
+**`$ArchiveRoot`** — 90일마다 밀려나는 세대를 두는 곳입니다. `$RepoDir` 과 **같은 볼륨**에
+두십시오. 다른 볼륨이면 이동이 이름 변경이 아니라 6 GB 복사가 됩니다.
+
+**`$ResetAfterDays`** — 기본 90. `0` 으로 두면 초기화하지 않고 이력이 무한히 쌓입니다.
+
+**`$KeepArchiveGenerations`** — 기본 `0`(무제한, 자동 삭제 안 함). 세대 하나가 스냅샷
+크기만큼(6 GB 기준) 차지하므로, 디스크를 제한하려면 개수를 지정하십시오.
+값을 넣는 순간부터 오래된 세대를 **자동으로 삭제**합니다.
 
 ```cmd
-powershell -NoProfile -Command "$p='C:\Scripts\ts_receive.ps1'; $x=(Get-Content $p -Raw) -replace '\$ExpectedProjectCount = 0','$ExpectedProjectCount = 12'; Set-Content -Path $p -Value $x -Encoding UTF8"
+powershell -NoProfile -Command "$p='C:\Scripts\ts_receive.ps1'; $x=(Get-Content $p -Raw) -replace '\$ResetAfterDays = 90','$ResetAfterDays = 180'; Set-Content -Path $p -Value $x -Encoding UTF8"
 ```
-
-**처리한 zip 을 남기고 싶다면** `$KeepProcessedZip` 을 `$true` 로 바꿉니다.
-기본값은 삭제이며, 내용은 이미 git 에 들어가 있으므로 잃는 것은 없습니다.
 
 고친 뒤에는 반드시 눈으로 확인하십시오.
 
 ```cmd
-powershell -NoProfile -Command "Select-String -Path 'C:\Scripts\ts_receive.ps1' -Pattern '^\$(WatchDir|RepoDir|TagMode|ExpectedProjectCount|KeepProcessedZip) '"
+powershell -NoProfile -Command "Select-String -Path 'C:\Scripts\ts_receive.ps1' -Pattern '^\$(WatchDir|RepoDir|ArchiveRoot|ResetAfterDays|KeepArchiveGenerations|KeepProcessedZip) '"
 ```
 
 원복은 원본 재복사가 가장 확실합니다.
