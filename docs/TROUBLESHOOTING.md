@@ -1,5 +1,8 @@
 # 문제 해결
 
+> 시스템 구조와 용어는 [README](../README.md), 설치 절차는
+> [install.md](../scripts/install.md) 를 참고하십시오.
+
 증상에서 출발해 원인을 찾도록 구성했습니다. 대부분의 답은 `C:\TempBackup\backup.log` 에 있습니다.
 
 ```cmd
@@ -160,6 +163,9 @@ powershell -NoProfile -Command "Get-ScheduledTaskInfo -TaskName 'TailscaleProjec
 powershell -NoProfile -Command "$p='C:\Scripts\ts_backup.bat'; $x=(Get-Content $p -Raw) -replace 'TARGETS=기존값','TARGETS=새값'; Set-Content -Path $p -Value $x -Encoding ASCII"
 findstr /c:"set \"TARGETS=" C:\Scripts\ts_backup.bat
 ```
+
+경로처럼 `\` 가 들어가는 값을 바꿀 때는, **찾는 쪽은 정규식이라 `\\` 로, 바꿀 값은 문자열이라
+`\` 하나로** 씁니다. 양쪽 다 `\\` 로 쓰면 백슬래시가 두 개씩 박힌 채 저장됩니다.
 
 고친 뒤에는 반드시 `findstr` 로 실제 반영을 확인하십시오. 원복은 원본 재복사가 가장 확실합니다.
 

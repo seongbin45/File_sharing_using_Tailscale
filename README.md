@@ -1,18 +1,89 @@
 # PycharmProjects 순환 백업 → Tailscale 전송
 
-`C:\Users\DiCiA\PycharmProjects` 하위의 프로젝트 폴더를 **한 번 실행에 한 폴더씩** 순환하며
-압축해 Tailscale Taildrop 으로 전송합니다. 매시간 / 로그온 / 절전 해제 직후에 실행됩니다.
+Windows PC 의 프로젝트 폴더들을 **자동으로, 한 번에 하나씩 차례로** 압축해 다른 기기로
+보내는 백업 스크립트입니다. 매시간, 컴퓨터를 켤 때, 절전에서 깨어날 때 실행됩니다.
+
+전송에는 **Tailscale Taildrop** 을 씁니다. Tailscale 은 같은 계정으로 로그인한 기기들을
+하나의 사설 네트워크로 묶어주는 VPN 이고, Taildrop 은 그 안에서 기기 간에 파일을 직접 밀어
+넣는 기능입니다(`tailscale file cp <파일> <기기이름>:`). 클라우드 계정이나 공유 폴더 설정
+없이 **기기 이름만으로** 파일을 보낼 수 있어 백업 전송 수단으로 씁니다.
 
 `.env` 와 `.git` 이력은 백업 대상에 반드시 포함됩니다(기본값은 제외 폴더 없음).
+
+---
+
+## 한눈에 보기
+
+한 회차가 실행되면 로그에 이렇게 남습니다.
+
+```
+[2026-08-30 16:34:43.57] === run start ===
+[2026-08-30 16:34:43.94] target folder: A1-2_Project (previous: A1-1_Project)
+[2026-08-30 16:34:43.94] creating archive: C:\TempBackup\A1-2_Project_2026_08_30_16_34.zip
+[2026-08-30 16:34:50.91] archive ready, 343628118 bytes
+[2026-08-30 16:35:37.93] sent A1-2_Project_2026_08_30_16_34.zip -> wisenesco-23031302
+[2026-08-30 16:35:37.97] sent and removed local archive
+[2026-08-30 16:35:37.98] === run end (exit 0) ===
+```
+
+직전 회차가 `A1-1_Project` 였으므로 이번엔 그 다음인 `A1-2_Project` 차례입니다. 압축해서
+1순위 기기로 보내고, 보낸 뒤 로컬 압축 파일은 지웁니다.
+
+---
+
+## 왜 이런 구조인가
+
+세 개의 파일이 사슬처럼 연결됩니다.
+
+```
+작업 스케줄러    →    wscript.exe   →   ts_backup_hidden.vbs  →  ts_backup.bat
+(언제 실행할지)      (창 없는 호스트)     (배치를 숨겨서 실행)      (실제 작업)
+```
+
+단계마다 이유가 있습니다.
+
+- **왜 파이썬이 아니라 배치인가** — 하는 일이 "압축하고(`tar`) 보내기(`tailscale`)"뿐입니다.
+  둘 다 Windows 명령줄에서 바로 실행되는 도구라, 파이썬을 끼우면 런타임 의존성만 늘어납니다.
+- **왜 VBS 래퍼가 필요한가** — 작업 스케줄러가 배치를 직접 실행하면 매시간 CMD 창이 화면에
+  번쩍입니다. VBS 의 `Run(..., 0, True)` 로 감싸면 창 없이 실행되고, 세 번째 인자 `True`
+  덕분에 배치의 종료 코드가 스케줄러까지 그대로 올라옵니다.
+- **왜 XML 로 등록하는가** — `schtasks` 명령줄로는 "놓친 실행 보충", "중복 실행 방지" 같은
+  옵션을 지정할 수 없습니다. XML 정의를 임포트하면 트리거 3종과 이 옵션들을 한 번에 넣습니다.
+- **왜 한 번에 하나씩만 보내는가** — 매시간 전체를 통째로 보내면 같은 데이터를 반복 전송하게
+  됩니다. 하나씩 돌면 한 회차가 짧게 끝나고 부하가 시간에 걸쳐 분산됩니다.
+
+설치 환경의 제약도 설계에 그대로 반영돼 있습니다. 이 시스템은 **관리자 권한이 없는 SSH(cmd)
+세션만으로** 설치하고 운영할 수 있어야 했습니다. 그래서 SYSTEM 권한 실행 대신 현재 사용자
+권한으로 등록하고, 창 숨김을 VBS 로 우회하며, 모든 설치 절차가 명령줄만으로 완결됩니다.
+편집기 없이 파일을 만들고 고치는 방법까지 [install.md](scripts/install.md) 에 들어 있는 것도
+그 때문입니다.
+
+---
+
+## 사전 요구사항
+
+| 항목 | 확인 명령 |
+|---|---|
+| `tar` — Windows 10 1803 이상 기본 포함 | `tar --version` |
+| `wscript` — 창 숨김 실행에 사용 | `where wscript` |
+| Tailscale — 기기들이 같은 계정으로 연결돼 있어야 함 | `tailscale status` |
+| PowerShell 5.1 이상 | `powershell -NoProfile -Command "$PSVersionTable.PSVersion"` |
+
+**관리자 권한은 필요 없습니다.**
+
+수신 기기 쪽에서 Taildrop 수신이 준비돼 있어야 파일이 실제로 도착합니다. 기기 종류별 조건은
+[docs/PORTING.md](docs/PORTING.md) 의 "수신 기기 쪽 전제" 를 보십시오.
+
+---
 
 ## 문서
 
 | 문서 | 언제 보는가 |
 |---|---|
-| [scripts/install.md](scripts/install.md) | 처음 설치할 때. SSH(cmd) 명령 전문 |
+| [scripts/install.md](scripts/install.md) | **처음 설치할 때.** SSH(cmd) 명령 전문. 여기부터 시작하십시오 |
 | [docs/PORTING.md](docs/PORTING.md) | 다른 PC 나 다른 대상 폴더에 옮길 때. 고쳐야 할 값 전수 목록 |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | 뭔가 이상할 때. 증상 → 원인 → 조치 |
-| [docs/VERIFICATION.md](docs/VERIFICATION.md) | 코드를 고친 뒤. 무엇을 어디까지 검증했는지의 기록 |
+| [docs/VERIFICATION.md](docs/VERIFICATION.md) | 실제로 동작하는지 근거가 궁금할 때, 코드를 고친 뒤 회귀 테스트할 때 |
 
 ---
 
@@ -31,7 +102,12 @@ C:\TempBackup\                   압축 파일 생성 위치
 C:\TempBackup\pending\           전 기기 전송 실패분 (다음 실행에서 재시도)
 C:\TempBackup\backup.log         실행 로그 (5MB 초과 시 .1 로 회전)
 C:\Users\DiCiA\backup_state.txt  마지막으로 백업한 폴더명
+C:\Scripts\src\                  이 저장소의 clone (원본 사본 겸 업데이트 경로)
 ```
+
+`C:\Scripts\src` 는 [install.md](scripts/install.md) 에서 이 저장소를 `git clone` 한 위치입니다.
+실제 실행되는 파일은 `C:\Scripts\` 에 복사된 쪽이고, `src` 는 원본 사본으로 남아 있어
+설정을 잘못 고쳤을 때 되돌리거나 `git pull` 로 업데이트를 받는 데 씁니다.
 
 ---
 
@@ -197,6 +273,9 @@ del C:\Users\DiCiA\backup_state.txt
 powershell -NoProfile -Command "$p='C:\Scripts\ts_backup.bat'; $x=(Get-Content $p -Raw) -replace '기존값','새값'; Set-Content -Path $p -Value $x -Encoding ASCII"
 findstr /c:"set \"TARGETS=" C:\Scripts\ts_backup.bat
 ```
+
+경로처럼 `\` 가 들어가는 값은 **찾는 쪽만 `\\` 로 이스케이프**하고 바꿀 값은 `\` 하나로 씁니다.
+고친 뒤에는 반드시 위처럼 실제 반영을 눈으로 확인하십시오.
 
 원복은 저장소 사본 재복사가 가장 확실합니다.
 
