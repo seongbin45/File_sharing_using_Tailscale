@@ -30,6 +30,19 @@ set "MIN_FREE_MB=10000"
 rem Target devices, in fallback order. Space separated, no trailing colon.
 set "TARGETS=wisenesco-23031302 laptop-7gmpubqc desktop-dvj3pqk desktop-0g92n63"
 
+rem Full path to 7z.exe. Deliberately NOT looked up on PATH: the 7-Zip
+rem installer does not register itself there, and a scheduled task runs with a
+rem plain environment rather than whatever shell the command was tested in.
+set "SEVENZIP=C:\Program Files\7-Zip\7z.exe"
+
+rem LZMA2 compression level. Measured on this data against Windows tar's zip:
+rem   -mx=1  10% smaller and twice as fast   (deflate is single threaded)
+rem   -mx=5  21% smaller, same total run time once transfer is counted
+rem   -mx=9  a few percent more for several times the time and memory
+rem 5 is the choice: the run is unattended at 04:00 with hours of headroom,
+rem so bytes matter and minutes do not.
+set "SEVENZIP_LEVEL=5"
+
 rem Retention for archives that could not be sent to ANY target.
 set "PENDING_KEEP_DAYS=3"
 set "PENDING_KEEP_COUNT=1"
@@ -37,11 +50,19 @@ set "PENDING_KEEP_COUNT=1"
 rem Log rotates once it grows past this many megabytes (one .1 backup kept).
 set "LOG_MAX_MB=5"
 
-rem Paths to leave out of the archive. Empty = archive everything, which is
-rem the intent here: .git history and .env files must survive.
-rem Example, if the archive ever has to be trimmed:
-rem   set "TAR_EXCLUDES=--exclude=*/venv/* --exclude=*/__pycache__/*"
-set "TAR_EXCLUDES="
+rem Optional path to a text file listing names to leave out of the archive,
+rem one per line, for example:
+rem     venv
+rem     .venv
+rem     __pycache__
+rem     node_modules
+rem Empty = archive everything, which is the intent here: .git history and
+rem .env files must survive.
+rem
+rem A list file rather than 7-Zip's own -xr!name switches: "!" is consumed by
+rem delayed expansion, so those switches would be silently mangled here.
+rem The path must not contain spaces.
+set "EXCLUDE_LIST="
 
 rem 1 = build the archive but skip the actual transfer (for testing).
 set "DRY_RUN=0"
@@ -56,12 +77,9 @@ rem   1 = fatal, no usable archive was produced
 rem   2 = archive was produced but no target accepted it (parked in pending)
 set "RC=0"
 
-rem Split BASE_DIR into its parent and its own name. tar is then pointed at
-rem the parent and told to archive the one directory, so the archive unpacks
-rem into a folder of the same name instead of scattering its contents.
+rem 7-Zip given a directory stores it relative to its parent, so the archive
+rem unpacks into a folder of the same name instead of scattering its contents.
 for %%A in ("%BASE_DIR%") do set "BASE_NAME=%%~nxA"
-for %%A in ("%BASE_DIR%") do set "BASE_PARENT=%%~dpA"
-if "!BASE_PARENT:~-1!"=="\" set "BASE_PARENT=!BASE_PARENT:~0,-1!"
 
 if not exist "%WORK_DIR%"    mkdir "%WORK_DIR%"
 if not exist "%PENDING_DIR%" mkdir "%PENDING_DIR%"
@@ -70,10 +88,15 @@ call :RotateLog
 call :Log "=== run start ==="
 
 rem Archives left behind by a previous interrupted run (pending/ is untouched).
-del /f /q "%WORK_DIR%\*.zip" >nul 2>&1
+del /f /q "%WORK_DIR%\*.7z" >nul 2>&1
 
 if not exist "%BASE_DIR%\" (
     call :Log "FATAL: BASE_DIR does not exist: %BASE_DIR%"
+    set "RC=1"
+    goto :End
+)
+if not exist "%SEVENZIP%" (
+    call :Log "FATAL: 7-Zip not found at %SEVENZIP%"
     set "RC=1"
     goto :End
 )
@@ -106,44 +129,55 @@ call :FlushPending
 call :PrunePending
 
 rem ------------------------------------------------------------------ archive
-set "ZIP_FILE=%WORK_DIR%\!BASE_NAME!_!DATETIME!.zip"
-call :Log "creating archive: !ZIP_FILE!"
+set "ARCHIVE=%WORK_DIR%\!BASE_NAME!_!DATETIME!.7z"
+call :Log "creating archive: !ARCHIVE! (LZMA2 -mx=%SEVENZIP_LEVEL%)"
 
-tar -a -c -f "!ZIP_FILE!" %TAR_EXCLUDES% -C "!BASE_PARENT!" "!BASE_NAME!" >>"%LOG_FILE%" 2>&1
-set "TAR_RC=%ERRORLEVEL%"
+set "EXCLUDE_ARG="
+if defined EXCLUDE_LIST (
+    if exist "!EXCLUDE_LIST!" (
+        set "EXCLUDE_ARG=-xr@!EXCLUDE_LIST!"
+        call :Log "excluding names listed in !EXCLUDE_LIST!"
+    ) else (
+        call :Log "WARN: EXCLUDE_LIST not found, archiving everything: !EXCLUDE_LIST!"
+    )
+)
 
-rem bsdtar returns 1 for warnings (locked files such as a git index or an
-rem open sqlite db) and still produces a usable archive. 2 and above is fatal.
-if !TAR_RC! geq 2 (
-    call :Log "FATAL: tar failed with exit code !TAR_RC!"
-    del /f /q "!ZIP_FILE!" >nul 2>&1
+"%SEVENZIP%" a -t7z -mx=%SEVENZIP_LEVEL% -mmt=on -bso0 -bsp0 !EXCLUDE_ARG! "!ARCHIVE!" "%BASE_DIR%" >>"%LOG_FILE%" 2>&1
+set "SZ_RC=%ERRORLEVEL%"
+
+rem 7-Zip returns 1 for warnings (a file it could not open, such as one held
+rem open by another process) and still produces a usable archive.
+rem 2 = fatal, 7 = bad command line, 8 = out of memory, 255 = user abort.
+if !SZ_RC! geq 2 (
+    call :Log "FATAL: 7-Zip failed with exit code !SZ_RC!"
+    del /f /q "!ARCHIVE!" >nul 2>&1
     set "RC=1"
     goto :End
 )
-if !TAR_RC! equ 1 call :Log "WARN: tar reported warnings (some files may have been locked)"
+if !SZ_RC! equ 1 call :Log "WARN: 7-Zip reported warnings (some files may have been locked)"
 
-if not exist "!ZIP_FILE!" (
+if not exist "!ARCHIVE!" (
     call :Log "FATAL: archive was not created"
     set "RC=1"
     goto :End
 )
-set "ZIP_SIZE=0"
-for %%A in ("!ZIP_FILE!") do set "ZIP_SIZE=%%~zA"
-if !ZIP_SIZE! leq 0 (
+set "ARCHIVE_SIZE=0"
+for %%A in ("!ARCHIVE!") do set "ARCHIVE_SIZE=%%~zA"
+if !ARCHIVE_SIZE! leq 0 (
     call :Log "FATAL: archive is empty"
-    del /f /q "!ZIP_FILE!" >nul 2>&1
+    del /f /q "!ARCHIVE!" >nul 2>&1
     set "RC=1"
     goto :End
 )
-call :Log "archive ready, !ZIP_SIZE! bytes"
+call :Log "archive ready, !ARCHIVE_SIZE! bytes"
 
 rem ----------------------------------------------------------------- transfer
-call :TrySend "!ZIP_FILE!"
+call :TrySend "!ARCHIVE!"
 if not errorlevel 1 (
-    del /f /q "!ZIP_FILE!" >nul 2>&1
+    del /f /q "!ARCHIVE!" >nul 2>&1
     call :Log "sent and removed local archive"
 ) else (
-    move /y "!ZIP_FILE!" "%PENDING_DIR%\" >nul 2>&1
+    move /y "!ARCHIVE!" "%PENDING_DIR%\" >nul 2>&1
     call :Log "all targets failed - archive moved to pending, will retry next run"
     call :PrunePending
     set "RC=2"
@@ -187,7 +221,7 @@ rem :FlushPending
 rem Retries archives from earlier runs, oldest first, before creating a new one.
 rem --------------------------------------------------------------------------
 :FlushPending
-for /f "usebackq delims=" %%P in (`dir /b /a:-d /o:d "%PENDING_DIR%\*.zip" 2^>nul`) do (
+for /f "usebackq delims=" %%P in (`dir /b /a:-d /o:d "%PENDING_DIR%\*.7z" 2^>nul`) do (
     call :TrySend "%PENDING_DIR%\%%P"
     if not errorlevel 1 (
         del /f /q "%PENDING_DIR%\%%P" >nul 2>&1
@@ -206,7 +240,7 @@ rem holding more than the newest is rarely worth the disk.
 rem Date arithmetic is done in PowerShell - cmd cannot do it reliably.
 rem --------------------------------------------------------------------------
 :PrunePending
-powershell -NoProfile -Command "$d='%PENDING_DIR%'; if (Test-Path -LiteralPath $d) { Get-ChildItem -LiteralPath $d -Filter *.zip -File | Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-%PENDING_KEEP_DAYS%) } | Remove-Item -Force -ErrorAction SilentlyContinue; Get-ChildItem -LiteralPath $d -Filter *.zip -File | Sort-Object LastWriteTime -Descending | Select-Object -Skip %PENDING_KEEP_COUNT% | Remove-Item -Force -ErrorAction SilentlyContinue }" >>"%LOG_FILE%" 2>&1
+powershell -NoProfile -Command "$d='%PENDING_DIR%'; if (Test-Path -LiteralPath $d) { Get-ChildItem -LiteralPath $d -Filter *.7z -File | Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-%PENDING_KEEP_DAYS%) } | Remove-Item -Force -ErrorAction SilentlyContinue; Get-ChildItem -LiteralPath $d -Filter *.7z -File | Sort-Object LastWriteTime -Descending | Select-Object -Skip %PENDING_KEEP_COUNT% | Remove-Item -Force -ErrorAction SilentlyContinue }" >>"%LOG_FILE%" 2>&1
 exit /b 0
 
 rem --------------------------------------------------------------------------

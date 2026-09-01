@@ -14,7 +14,7 @@
 
 | 항목 | 확인 명령 | 비고 |
 |---|---|---|
-| `tar` (bsdtar) | `tar --version` | Windows 10 1803 이상 기본 포함 |
+| **7-Zip** | `dir "C:\Program Files\7-Zip\7z.exe"` | 양쪽 PC 모두 필수. PATH 에 등록되지 않으므로 전체 경로를 설정값으로 씀 |
 | `wscript` | `where wscript` | 창 숨김 래퍼 실행에 필요 |
 | `tailscale` | `tailscale status` | PATH 에 잡혀 있어야 함 |
 | PowerShell | `powershell -NoProfile -Command "$PSVersionTable.PSVersion"` | 5.1 이상. 타임스탬프·보존 정리에 사용 |
@@ -32,22 +32,31 @@
 | `BASE_DIR` | `C:\Users\DiCiA\PycharmProjects` | **필수 변경.** 통째로 압축할 디렉터리 |
 | `WORK_DIR` | `C:\TempBackup` | 압축 파일 생성 위치. `BASE_DIR` 전체가 올라갈 여유 공간이 필요 |
 | `MIN_FREE_MB` | `10000` | 이보다 여유가 적으면 시작하지 않음. 대상 크기에 맞게 조정 |
+| `SEVENZIP` | `C:\Program Files\7-Zip\7z.exe` | **설치 경로가 다르면 필수 변경** |
+| `SEVENZIP_LEVEL` | `5` | LZMA2 수준. `1` 은 빠르고, `9` 는 시간·메모리를 크게 씀 |
 | `TARGETS` | `wisenesco-23031302 laptop-7gmpubqc ...` | **필수 변경.** 공백 구분, 순서가 곧 우선순위. `tailscale status` 의 이름과 정확히 일치해야 함 |
 | `PENDING_KEEP_DAYS` | `3` | 전송 실패분 보관 기한 |
 | `PENDING_KEEP_COUNT` | `1` | 전송 실패분 최대 개수 |
 | `LOG_MAX_MB` | `5` | 로그 회전 기준 |
-| `TAR_EXCLUDES` | (비어 있음) | 압축 제외 패턴. 아래 참고 |
+| `EXCLUDE_LIST` | (비어 있음) | 제외할 이름을 한 줄에 하나씩 적은 목록 파일 경로. 아래 참고 |
 | `DRY_RUN` | `0` | `1` 이면 압축만 하고 전송하지 않음. 최초 테스트용 |
 
 순환 커서가 없으므로 상태 파일도 없습니다. 매 회차가 서로 독립적입니다.
 
-### 제외 패턴을 쓰려면
+### 제외를 쓰려면
 
-`bsdtar` 패턴이며 `*/이름/*` 형태입니다.
+제외할 이름을 한 줄에 하나씩 적은 텍스트 파일을 만들고, 그 경로를 `EXCLUDE_LIST` 에 넣습니다.
+경로에 공백이 없어야 합니다.
 
-```bat
-set "TAR_EXCLUDES=--exclude=*/venv/* --exclude=*/.venv/* --exclude=*/__pycache__/* --exclude=*/node_modules/*"
 ```
+venv
+.venv
+__pycache__
+node_modules
+```
+
+7-Zip 자체의 `-xr!이름` 스위치는 쓰지 마십시오. 배치에 지연 확장이 켜져 있어 `!` 가 먹히고
+제외가 조용히 무시됩니다.
 
 `.git` 과 `.env` 를 제외하면 백업의 의미가 사라지므로 넣지 마십시오.
 
@@ -99,9 +108,9 @@ set "TAR_EXCLUDES=--exclude=*/venv/* --exclude=*/.venv/* --exclude=*/__pycache__
 ## 이식 절차 요약
 
 ```
-1. 전제 조건 확인            (tar / wscript / tailscale / powershell / 여유 공간)
+1. 전제 조건 확인            (7-Zip / wscript / tailscale / powershell / 여유 공간)
 2. 파일 3개 배치             (bat, vbs, xml 을 같은 폴더에)
-3. ts_backup.bat CONFIG 수정 (최소 BASE_DIR, TARGETS, MIN_FREE_MB)
+3. ts_backup.bat CONFIG 수정 (최소 BASE_DIR, TARGETS, SEVENZIP)
 4. DRY_RUN=1 로 압축만 테스트 → 압축 크기와 소요 시간 확인
 5. DRY_RUN=0 으로 전송 테스트 → 수신 기기 도착 확인
 6. 롤백 테스트               (1순위를 가짜 이름으로)
@@ -110,7 +119,7 @@ set "TAR_EXCLUDES=--exclude=*/venv/* --exclude=*/.venv/* --exclude=*/__pycache__
 ```
 
 4단계에서 나온 압축 크기와 전송 시간이 하루 1회로 감당 가능한지 먼저 판단하십시오.
-감당이 안 되면 `<DaysInterval>` 을 늘리거나 `TAR_EXCLUDES` 를 도입해야 합니다.
+감당이 안 되면 `<DaysInterval>` 을 늘리거나 `EXCLUDE_LIST` 를 도입해야 합니다.
 
 각 단계의 구체적인 명령은 [install.md](../scripts/install.md) 에 있습니다.
 검증 시 무엇을 근거로 판정하는지는 [VERIFICATION.md](VERIFICATION.md) 를 참고하십시오.

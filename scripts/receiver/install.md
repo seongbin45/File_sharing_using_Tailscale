@@ -12,23 +12,26 @@
 
 ```cmd
 git --version
-tar --version
+dir "C:\Program Files\7-Zip\7z.exe"
 where wscript
 powershell -NoProfile -Command "$PSVersionTable.PSVersion"
 ```
 
 - **`git` 이 없으면 이 방식은 쓸 수 없습니다.** https://git-scm.com/download/win 에서 설치하고
   설치 중 "Add to PATH" 를 켜십시오.
-- `tar` 는 압축 해제에 씁니다. 없으면 스크립트가 `Expand-Archive` 로 대체하지만 느립니다.
+- **7-Zip 도 필수입니다.** 보내는 쪽이 `.7z` 로 압축해 보내는데, Windows 내장 `tar` 도
+  `Expand-Archive` 도 `.7z` 를 읽지 못합니다. 없으면 https://www.7-zip.org 에서 설치하십시오.
+  경로가 다르면 `$SevenZip` 설정값을 고쳐야 합니다. PATH 에는 등록되지 않으므로 스크립트가
+  전체 경로로 직접 호출합니다.
 - PowerShell 은 5.1 이상이면 됩니다(Windows 10/11 기본).
 
 수신 폴더에 실제로 zip 이 오는지도 확인하십시오.
 
 ```cmd
-dir "%USERPROFILE%\Downloads\*.zip"
+dir "%USERPROFILE%\Downloads\*.7z"
 ```
 
-`A1-1_Project_2026_08_29_07_59.zip` 같은 이름이 보여야 합니다. 없다면 Taildrop 수신 설정부터
+`PycharmProjects_2026_11_26_04_00.7z` 같은 이름이 보여야 합니다. 없다면 Taildrop 수신 설정부터
 점검해야 하며, 이 스크립트로는 해결되지 않습니다.
 
 ---
@@ -94,7 +97,7 @@ type C:\TempReceive\receive.log
 - 로그에 `ingesting <파일명>` → `committed: <프로젝트> @ <타임스탬프>`
 - `.git` 이 든 프로젝트라면 `renamed N nested .git -> .git_archived` 도 함께
 
-zip 이 아직 하나도 안 왔다면 `no archives to ingest` 만 찍히고 정상 종료합니다.
+압축 파일이 아직 하나도 안 왔다면 `no archives to ingest` 만 찍히고 정상 종료합니다.
 
 이어서 관리 디렉터리를 직접 확인합니다.
 

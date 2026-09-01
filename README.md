@@ -21,11 +21,11 @@ Windows PC 의 프로젝트 루트를 **하루 한 번 통째로** 압축해 다
 ```
 [2026-11-26 04:00:01.20] === run start ===
 [2026-11-26 04:00:02.44] free space on work volume: 178422 MB
-[2026-11-26 04:00:02.51] creating archive: C:\TempBackup\PycharmProjects_2026_11_26_04_00.zip
-[2026-11-26 04:02:26.83] archive ready, 6298504955 bytes
-[2026-11-26 04:17:41.09] sent PycharmProjects_2026_11_26_04_00.zip -> wisenesco-23031302
-[2026-11-26 04:17:41.15] sent and removed local archive
-[2026-11-26 04:17:41.16] === run end (exit 0) ===
+[2026-11-26 04:00:02.51] creating archive: C:\TempBackup\PycharmProjects_2026_11_26_04_00.7z (LZMA2 -mx=5)
+[2026-11-26 04:08:51.02] archive ready, 4986120448 bytes
+[2026-11-26 04:20:38.71] sent PycharmProjects_2026_11_26_04_00.7z -> wisenesco-23031302
+[2026-11-26 04:20:38.77] sent and removed local archive
+[2026-11-26 04:20:38.78] === run end (exit 0) ===
 ```
 
 받는 쪽은 이 압축을 풀어 커밋하고 `2026_11_26_04_00` 태그를 찍습니다.
@@ -42,8 +42,8 @@ Windows PC 의 프로젝트 루트를 **하루 한 번 통째로** 압축해 다
 (언제 실행할지)      (창 없는 호스트)     (배치를 숨겨서 실행)      (실제 작업)
 ```
 
-- **왜 파이썬이 아니라 배치인가** — 보내는 쪽이 하는 일은 "압축하고(`tar`) 보내기
-  (`tailscale`)"뿐입니다. 둘 다 Windows 명령줄 도구라 파이썬을 끼우면 의존성만 늘어납니다.
+- **왜 파이썬이 아니라 배치인가** — 보내는 쪽이 하는 일은 "압축하고(`7z`) 보내기
+  (`tailscale`)"뿐입니다. 둘 다 명령줄 도구라 파이썬을 끼우면 의존성만 늘어납니다.
   반대로 받는 쪽은 파일명 파싱·상태 관리·git 호출이 필요해 PowerShell 로 씁니다.
 - **왜 VBS 래퍼가 필요한가** — 작업 스케줄러가 배치를 직접 실행하면 CMD 창이 화면에
   번쩍입니다. VBS 의 `Run(..., 0, True)` 로 감싸면 창 없이 실행되고, 세 번째 인자 `True`
@@ -82,13 +82,17 @@ Windows PC 의 프로젝트 루트를 **하루 한 번 통째로** 압축해 다
 
 | 항목 | 확인 명령 |
 |---|---|
-| `tar` — Windows 10 1803 이상 기본 포함 | `tar --version` |
+| **7-Zip** — 양쪽 PC 모두 필요 | `dir "C:\Program Files\7-Zip\7z.exe"` |
 | `wscript` — 창 숨김 실행에 사용 | `where wscript` |
 | Tailscale — 기기들이 같은 계정으로 연결돼 있어야 함 | `tailscale status` |
 | PowerShell 5.1 이상 | `powershell -NoProfile -Command "$PSVersionTable.PSVersion"` |
 | 작업 볼륨 여유 공간 | 압축 하나가 통째로 올라갈 만큼 (기본 최소 10 GB) |
 
 **관리자 권한은 필요 없습니다.** 받는 쪽은 여기에 더해 `git` 이 필요합니다.
+
+7-Zip 은 설치해도 **PATH 에 등록되지 않습니다.** 스크립트가 `SEVENZIP` 설정값의 전체 경로로
+직접 호출하는 이유입니다. 작업 스케줄러는 맨 환경에서 돌기 때문에 PATH 에 기대면 안 됩니다.
+없으면 https://www.7-zip.org 에서 설치하십시오.
 
 ---
 
@@ -135,22 +139,21 @@ C:\Scripts\src\                  이 저장소의 clone (원본 사본 겸 업�
 
 ## 실행 흐름
 
-1. 로그 회전, 이전 실행이 중단되며 남긴 고아 zip 삭제
+1. 로그 회전, 이전 실행이 중단되며 남긴 고아 압축 파일 삭제
 2. 타임스탬프 취득 (`yyyy_MM_dd_HH_mm`)
 3. **여유 공간 확인** — `MIN_FREE_MB` 미만이면 시작하지 않고 종료. 디스크를 채운 채
    반쯤 만들어진 압축을 남기는 것이 건너뛰는 것보다 나쁩니다
-4. **`pending` 재전송 우선** — 실패해 남은 zip 을 먼저 재시도
-5. `tar` 로 `BASE_DIR` 전체를 압축 → `PycharmProjects_2026_11_26_04_00.zip`
+4. **`pending` 재전송 우선** — 실패해 남은 압축 파일을 먼저 재시도
+5. 7-Zip 으로 `BASE_DIR` 전체를 압축 → `PycharmProjects_2026_11_26_04_00.7z`
 6. 대상 기기를 순서대로 시도, 첫 성공에서 중단
-7. 성공 → zip 삭제 / 전 기기 실패 → `pending` 으로 이동
+7. 성공 → 압축 파일 삭제 / 전 기기 실패 → `pending` 으로 이동
 
 ```
-tar -a -c -f "C:\TempBackup\PycharmProjects_2026_11_26_04_00.zip" -C "C:\Users\DiCiA" "PycharmProjects"
+"C:\Program Files\7-Zip\7z.exe" a -t7z -mx=5 -mmt=on "C:\TempBackup\PycharmProjects_2026_11_26_04_00.7z" "C:\Users\DiCiA\PycharmProjects"
 ```
 
-`-C` 로 부모 디렉터리를 가리키고 폴더명을 명시하므로, 압축을 풀면 `PycharmProjects/` 가
-그대로 복원됩니다. 와일드카드(`*`)를 쓰면 `-C` 대상이 아닌 현재 디렉터리 기준으로 해석될
-위험이 있어 폴더명을 명시합니다.
+7-Zip 은 디렉터리를 받으면 그 부모 기준의 상대 경로로 저장하므로, 압축을 풀면
+`PycharmProjects/` 가 그대로 복원됩니다.
 
 ---
 
@@ -163,9 +166,9 @@ tar -a -c -f "C:\TempBackup\PycharmProjects_2026_11_26_04_00.zip" -C "C:\Users\D
 4순위  desktop-0g92n63
 ```
 
-4개 모두 실패하면 zip 은 `pending` 에 남고 다음 실행에서 새 압축보다 **먼저** 재전송됩니다.
-`pending` 은 최신 1개 · 3일 경과분 자동 삭제로 상한이 걸려 있습니다. 각각이 6 GB짜리 전체
-스냅샷이므로 여러 개를 쌓아둘 이유가 없습니다.
+4개 모두 실패하면 압축 파일은 `pending` 에 남고 다음 실행에서 새 압축보다 **먼저**
+재전송됩니다. `pending` 은 최신 1개 · 3일 경과분 자동 삭제로 상한이 걸려 있습니다.
+각각이 수 GB짜리 전체 스냅샷이므로 여러 개를 쌓아둘 이유가 없습니다.
 
 ---
 
@@ -191,11 +194,13 @@ tar -a -c -f "C:\TempBackup\PycharmProjects_2026_11_26_04_00.zip" -C "C:\Users\D
 | `BASE_DIR` | `C:\Users\DiCiA\PycharmProjects` | 통째로 압축할 디렉터리 |
 | `WORK_DIR` | `C:\TempBackup` | 압축 파일 생성 위치 |
 | `MIN_FREE_MB` | `10000` | 이보다 여유가 적으면 시작하지 않음 |
+| `SEVENZIP` | `C:\Program Files\7-Zip\7z.exe` | 7z.exe 전체 경로. PATH 에 의존하지 않음 |
+| `SEVENZIP_LEVEL` | `5` | LZMA2 압축 수준 (`1` 빠름 / `5` 균형 / `9` 최대) |
 | `TARGETS` | 기기 4개 | 공백 구분, 순서가 곧 우선순위 |
 | `PENDING_KEEP_DAYS` | `3` | pending 보관 기한 |
 | `PENDING_KEEP_COUNT` | `1` | pending 최대 개수 |
 | `LOG_MAX_MB` | `5` | 로그 회전 기준 |
-| `TAR_EXCLUDES` | 없음 | 압축 제외 패턴 |
+| `EXCLUDE_LIST` | 없음 | 제외할 이름을 한 줄에 하나씩 적은 목록 파일 경로 |
 | `DRY_RUN` | `0` | `1` 이면 압축만 하고 전송하지 않음 |
 
 실행 시각은 `ts_backup_task.xml` 의 `<StartBoundary>` 로 정합니다(기본 04:00).
@@ -205,12 +210,18 @@ tar -a -c -f "C:\TempBackup\PycharmProjects_2026_11_26_04_00.zip" -C "C:\Users\D
 받는 쪽 저장소 증가는 **90일마다 초기화**로 막습니다([RECEIVER.md](docs/RECEIVER.md)).
 제외로 막지 않는 이유는, 한번 제외한 것은 어느 시점으로 돌아가도 복원할 수 없기 때문입니다.
 
-그래도 전송량 자체를 줄여야 한다면 `TAR_EXCLUDES` 한 줄만 바꾸면 됩니다.
-`bsdtar` 패턴이며 `*/이름/*` 형태를 씁니다.
+그래도 전송량 자체를 줄여야 한다면 제외할 이름을 한 줄에 하나씩 적은 파일을 만들고
+`EXCLUDE_LIST` 에 그 경로를 넣으면 됩니다. 경로에 공백이 없어야 합니다.
 
-```bat
-set "TAR_EXCLUDES=--exclude=*/venv/* --exclude=*/.venv/* --exclude=*/__pycache__/* --exclude=*/node_modules/*"
+```cmd
+> C:\Scripts\excludes.txt echo venv
+>>C:\Scripts\excludes.txt echo .venv
+>>C:\Scripts\excludes.txt echo __pycache__
+>>C:\Scripts\excludes.txt echo node_modules
 ```
+
+7-Zip 자체의 `-xr!이름` 스위치를 쓰지 않는 이유는, 배치에 지연 확장이 켜져 있어 **`!` 가
+먹히기 때문**입니다. 그대로 적으면 제외가 조용히 무시됩니다.
 
 `.git` 과 `.env` 는 백업 목적상 **제외 목록에 넣지 마십시오.**
 
@@ -296,6 +307,26 @@ rd /s /q C:\Scripts
 - `bsdtar` 는 잠긴 파일(git index, sqlite 등) 때문에 경고와 함께 종료 코드 `1` 을
   반환하지만 아카이브는 정상입니다. `2` 이상만 치명 오류로 처리합니다.
 - `schtasks /create /xml` 은 XML 이 **UTF-16** 이어야 합니다. UTF-8 이면 등록이 실패합니다.
+
+### 왜 zip 이 아니라 7z 인가
+
+`음원+악보병합 프로젝트` 하나로 실측한 값입니다.
+
+| 방식 | 크기 | zip 대비 | 압축 시간 |
+|---|---|---|---|
+| zip (`tar -a`) | 829.2 MB | — | 47.6초 |
+| 7z `-mx=1` | 745.6 MB | **−10.1%** | **22.6초** |
+| 7z `-mx=5` | 656.9 MB | **−20.8%** | 73.5초 |
+
+`-mx=1` 은 zip 보다 **작으면서 동시에 두 배 빠릅니다.** Windows 내장 `tar` 의 deflate 는
+단일 스레드인데 7-Zip 은 `-mmt` 로 모든 코어를 쓰기 때문입니다. zip 을 유지할 이유가 없습니다.
+
+`-mx=5` 를 기본으로 둔 것은, 전송까지 포함한 총 소요 시간이 zip 과 거의 같으면서 데이터는
+21% 적기 때문입니다. 새벽 4시 무인 실행에 실행 제한이 4시간이라 압축에 몇 분 더 쓰는 것은
+실질 비용이 아닙니다. 빠른 완료가 더 중요하면 `SEVENZIP_LEVEL` 을 `1` 로 낮추면 됩니다.
+
+`-mx=9` 는 이 데이터에서 권하지 않습니다. 용량의 상당 부분이 mp4·mp3·png 라 알고리즘이
+손댈 여지가 적은데, 압축 시간과 메모리만 몇 배로 늘어납니다.
 
 ### robocopy 스테이징을 쓰지 않는 이유
 

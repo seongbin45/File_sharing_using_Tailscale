@@ -3,7 +3,7 @@
 
     Receiving side of the Tailscale project backup.
 
-    Taildrop drops "<Root>_<yyyy_MM_dd_HH_mm>.zip" into the watch directory,
+    Taildrop drops "<Root>_<yyyy_MM_dd_HH_mm>.7z" into the watch directory,
     where <Root> is the whole project directory archived in one piece. Each
     archive is therefore a complete, self-consistent snapshot.
 
@@ -17,7 +17,7 @@
     grow without ever excluding anything from the backup.
 
     Run it periodically from Task Scheduler. See install.md.
-    Requires PowerShell 5.1 and git on PATH.
+    Requires PowerShell 5.1, git on PATH, and 7-Zip at $SevenZip.
 #>
 
 [CmdletBinding()]
@@ -45,8 +45,14 @@ $ResetAfterDays = 90
 $KeepArchiveGenerations = 0
 
 # Staging and log live outside the repository so they are never committed.
-# Keep this on the same volume as $RepoDir.
+# Keep this on the same volume as $RepoDir, and out of any path with spaces.
 $WorkDir = 'C:\TempReceive'
+
+# Full path to 7z.exe. Deliberately not looked up on PATH: the 7-Zip installer
+# does not register itself there, and a scheduled task runs with a plain
+# environment. Neither tar nor Expand-Archive can read .7z, so this is a hard
+# requirement on the receiving side, not a nicety.
+$SevenZip = 'C:\Program Files\7-Zip\7z.exe'
 
 # An archive is ignored until it has been untouched for this long, so a
 # transfer still in progress is never ingested half-written. A 6 GB Taildrop
@@ -110,8 +116,8 @@ function Invoke-Native {
         $ErrorActionPreference = 'Stop' must not be in effect here. Windows
         PowerShell turns anything a native command writes to stderr into an
         ErrorRecord when 2>&1 is used, and under 'Stop' that terminates the
-        script - git and tar both write ordinary progress text to stderr, so
-        a perfectly successful command would abort the run.
+        script - git and 7-Zip both write ordinary progress text to stderr,
+        so a perfectly successful command would abort the run.
     #>
     param([Parameter(Mandatory)][string]$Command, [Parameter(Mandatory)][string[]]$Arguments)
     $previous = $ErrorActionPreference
@@ -316,21 +322,20 @@ function Rename-NestedGitDirs {
     return $renamed
 }
 
-function Expand-Zip {
-    param([Parameter(Mandatory)][string]$ZipPath, [Parameter(Mandatory)][string]$Destination)
-    # bsdtar reads zip and is far faster than Expand-Archive on large trees.
-    $result = Invoke-Native -Command 'tar' -Arguments @('-x', '-f', $ZipPath, '-C', $Destination)
-    foreach ($line in $result.Output) { if ("$line".Trim()) { Write-Log "    tar: $line" } }
-    # 1 = warnings (locked or odd entries); the archive is still usable.
+function Expand-Snapshot {
+    <#
+        There is no fallback here on purpose. Windows tar cannot read .7z and
+        neither can Expand-Archive, so if 7-Zip is missing the run must fail
+        loudly rather than half-succeed.
+    #>
+    param([Parameter(Mandatory)][string]$ArchivePath, [Parameter(Mandatory)][string]$Destination)
+    $result = Invoke-Native -Command $SevenZip -Arguments @('x', '-y', '-bso0', '-bsp0', "-o$Destination", $ArchivePath)
+    foreach ($line in $result.Output) { if ("$line".Trim()) { Write-Log "    7z: $line" } }
+    # 1 = warnings (a file it could not fully restore); the tree is still usable.
+    # 2 = fatal, 7 = bad command line, 8 = out of memory, 255 = user abort.
     if ($result.Code -le 1) { return $true }
-    Write-Log "    tar exited $($result.Code), retrying with Expand-Archive"
-    try {
-        Expand-Archive -LiteralPath $ZipPath -DestinationPath $Destination -Force
-        return $true
-    } catch {
-        Write-Log "    Expand-Archive failed: $($_.Exception.Message)"
-        return $false
-    }
+    Write-Log "    FAIL: 7-Zip exited $($result.Code)"
+    return $false
 }
 
 # ------------------------------- reset ------------------------------------
@@ -432,7 +437,7 @@ function Import-Snapshot {
     New-Item -ItemType Directory -Path $stage -Force | Out-Null
 
     try {
-        if (-not (Expand-Zip -ZipPath $Zip.FullName -Destination $stage)) { return $false }
+        if (-not (Expand-Snapshot -ArchivePath $Zip.FullName -Destination $stage)) { return $false }
 
         $tops = @(Get-ChildItem -LiteralPath $stage -Force)
         if ($tops.Count -ne 1 -or -not $tops[0].PSIsContainer) {
@@ -521,6 +526,11 @@ try {
         Write-Log '=== run end (exit 1) ==='
         exit 1
     }
+    if (-not (Test-Path -LiteralPath $SevenZip)) {
+        Write-Log "FATAL: 7-Zip not found at $SevenZip"
+        Write-Log '=== run end (exit 1) ==='
+        exit 1
+    }
     if (-not (Test-Path -LiteralPath $WatchDir)) {
         Write-Log "FATAL: watch directory not found: $WatchDir"
         Write-Log '=== run end (exit 1) ==='
@@ -534,7 +544,7 @@ try {
 
     $pattern = '^(?<name>.+)_(?<stamp>\d{4}_\d{2}_\d{2}_\d{2}_\d{2})$'
     $candidates = @(
-        Get-ChildItem -LiteralPath $WatchDir -File -Filter '*.zip' -ErrorAction SilentlyContinue |
+        Get-ChildItem -LiteralPath $WatchDir -File -Filter '*.7z' -ErrorAction SilentlyContinue |
             Where-Object { $_.BaseName -match $pattern } |
             Sort-Object { [regex]::Match($_.BaseName, $pattern).Groups['stamp'].Value }
     )

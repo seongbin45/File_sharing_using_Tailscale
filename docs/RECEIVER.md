@@ -3,7 +3,7 @@
 > 보내는 쪽은 [README](../README.md) 를 보십시오. 설치 절차는
 > [scripts/receiver/install.md](../scripts/receiver/install.md) 에 있습니다.
 
-Taildrop 이 `Downloads` 에 떨어뜨린 `<루트>_<yyyy_MM_dd_HH_mm>.zip` 을 받아, 고정된 관리
+Taildrop 이 `Downloads` 에 떨어뜨린 `<루트>_<yyyy_MM_dd_HH_mm>.7z` 를 받아, 고정된 관리
 디렉터리에 풀고 커밋합니다. **압축 하나가 프로젝트 루트 전체의 스냅샷**이므로
 **커밋 하나하나가 완전한 복원 지점**이고, 매 커밋에 타임스탬프 태그가 붙습니다.
 
@@ -15,8 +15,8 @@ Taildrop 이 `Downloads` 에 떨어뜨린 `<루트>_<yyyy_MM_dd_HH_mm>.zip` 을 
 
 ```
 C:\Users\<사용자>\Downloads\
-    PycharmProjects_2026_11_26_04_00.zip   ← Taildrop 이 떨어뜨린 것 (처리 후 삭제)
-    _rejected\                             ← 형식이 맞지 않아 걷어낸 zip
+    PycharmProjects_2026_11_26_04_00.7z    ← Taildrop 이 떨어뜨린 것 (처리 후 삭제)
+    _rejected\                             ← 형식이 맞지 않아 걷어낸 압축 파일
     PycharmProjects\                       ← 관리 디렉터리 (git 저장소, 이름 고정)
         .git\                              ← 관리 저장소
         .gitattributes                     ← * -text (줄바꿈 변환 금지)
@@ -48,7 +48,7 @@ git 태그가 맡습니다. 이름을 매번 바꾸면 저장소 경로가 달�
 ## 실행 흐름
 
 1. 로그 회전, 저장소 준비(`git init`, 없으면 신원·옵션 설정)
-2. `Downloads` 를 훑어 `<이름>_<타임스탬프>.zip` 형식 파일을 타임스탬프 오름차순으로 수집
+2. `Downloads` 를 훑어 `<이름>_<타임스탬프>.7z` 형식 파일을 타임스탬프 오름차순으로 수집
 3. **전송이 끝나지 않은 파일은 건너뜀** — 마지막 수정으로부터 120초가 지났고 배타적으로
    열리는 파일만 처리합니다. 6 GB 전송은 수 분이 걸리므로 넉넉히 잡습니다
 4. **초기화 시점이 됐으면 먼저 초기화** (아래 참조)
@@ -56,9 +56,13 @@ git 태그가 맡습니다. 이름을 매번 바꾸면 저장소 경로가 달�
 6. 관리 디렉터리를 `.git` 만 남기고 **비운 뒤** 새 내용물을 넣음
 7. `Day_count.txt` 두 종류와 `.ts_state.json` 갱신
 8. `git add -A` → `git commit -m "snapshot <타임스탬프>"` → `git tag <타임스탬프>`
-9. 처리에 성공한 zip 삭제 (또는 `_processed` 로 이동)
+9. 처리에 성공한 압축 파일 삭제 (또는 `_processed` 로 이동)
 
-실패한 zip 은 그 자리에 남겨 다음 회차에 다시 시도합니다.
+실패한 압축 파일은 그 자리에 남겨 다음 회차에 다시 시도합니다.
+
+**7-Zip 이 없으면 아무것도 못 합니다.** Windows 내장 `tar` 도 `Expand-Archive` 도 `.7z` 를
+읽지 못하므로 대체 경로가 없습니다. 시작할 때 `$SevenZip` 경로를 확인하고 없으면 종료 코드
+`1` 로 끝냅니다.
 
 ### 왜 비우고 새로 푸는가
 
@@ -212,14 +216,15 @@ A1-2_Project                                 37  2026_11_26_04_00    2026_10_20_
 
 | 변수 | 기본값 | 설명 |
 |---|---|---|
-| `$WatchDir` | `%USERPROFILE%\Downloads` | zip 이 떨어지는 곳. 하위 폴더는 훑지 않음 |
+| `$WatchDir` | `%USERPROFILE%\Downloads` | 압축 파일이 떨어지는 곳. 하위 폴더는 훑지 않음 |
 | `$RepoDir` | `$WatchDir\PycharmProjects` | 관리 디렉터리. 이름 고정 |
 | `$ArchiveRoot` | `%USERPROFILE%\PycharmProjects_Archive` | 밀려난 세대를 두는 곳. **같은 볼륨에 두어야** 이동이 복사가 아닌 이름 변경이 됨 |
 | `$ResetAfterDays` | `90` | 초기화 주기. `0` 이면 초기화하지 않음 |
 | `$KeepArchiveGenerations` | `0` | 보관할 세대 수. `0` = 무제한(자동 삭제 안 함) |
-| `$WorkDir` | `C:\TempReceive` | 임시 공간과 로그 |
+| `$SevenZip` | `C:\Program Files\7-Zip\7z.exe` | 7z.exe 전체 경로. **필수** |
+| `$WorkDir` | `C:\TempReceive` | 임시 공간과 로그. 공백 없는 경로여야 함 |
 | `$MinAgeSeconds` | `120` | 이만큼 조용해진 파일만 처리 (전송 중 파일 방지) |
-| `$KeepProcessedZip` | `$false` | `$true` 면 처리한 zip 을 `_processed` 로 이동 |
+| `$KeepProcessedZip` | `$false` | `$true` 면 처리한 압축 파일을 `_processed` 로 이동 |
 | `$LogMaxMB` | `5` | 로그 회전 기준 |
 
 ---
@@ -231,8 +236,8 @@ A1-2_Project                                 37  2026_11_26_04_00    2026_10_20_
 | 코드 | 의미 |
 |---|---|
 | `0` | 처리할 것이 없었거나 전부 성공 |
-| `1` | 치명적 실패 — git 이 없거나 저장소를 준비하지 못함 |
-| `2` | 일부 zip 실패. 그 자리에 남겨 다음 회차에 재시도 (또는 `_rejected` 로 이동) |
+| `1` | 치명적 실패 — git 또는 7-Zip 이 없거나 저장소를 준비하지 못함 |
+| `2` | 일부 압축 파일 실패. 그 자리에 남겨 다음 회차에 재시도 (또는 `_rejected` 로 이동) |
 
 ---
 

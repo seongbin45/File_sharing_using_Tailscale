@@ -29,7 +29,8 @@ Taildrop 전송은 약 7 MB/s 입니다(6 GB 기준 압축 2.4분 + 전송 15분
 줄이려면 셋 중 하나입니다.
 
 - `ts_backup_task.xml` 의 `<DaysInterval>` 을 늘려 빈도를 낮춤
-- `TAR_EXCLUDES` 로 재생성 가능한 폴더를 제외 (`venv`, `node_modules`, `__pycache__`)
+- `SEVENZIP_LEVEL` 을 `1` 로 낮춤 — 실측 기준 `-mx=5` 보다 3배 이상 빠르고 zip 보다는 여전히 작음
+- `EXCLUDE_LIST` 로 재생성 가능한 폴더를 제외 (`venv`, `node_modules`, `__pycache__`)
 - 대상에서 대용량 산출물을 애초에 다른 곳으로 옮김
 
 `.git` 과 `.env` 는 제외하지 마십시오. 백업의 목적 자체가 사라집니다.
@@ -182,3 +183,40 @@ findstr /c:"set \"TARGETS=" C:\Scripts\ts_backup.bat
 
 `goto` 나 괄호 블록 파싱이 틀어질 수 있습니다. 저장소의 `.gitattributes` 가 체크아웃 시
 CRLF 를 강제하므로, git 을 거치지 않고 파일을 만들 때만 주의하면 됩니다.
+
+---
+
+## 7-Zip 관련
+
+### `FATAL: 7-Zip not found at ...`
+
+`SEVENZIP`(보내는 쪽) 또는 `$SevenZip`(받는 쪽) 경로에 `7z.exe` 가 없습니다.
+
+```cmd
+dir "C:\Program Files\7-Zip\7z.exe"
+```
+
+없으면 https://www.7-zip.org 에서 설치하고, 경로가 다르면 설정값을 고치십시오.
+
+### `where 7z` 가 아무것도 못 찾음
+
+**정상입니다.** 7-Zip 설치본은 자기를 PATH 에 등록하지 않습니다. 그래서 스크립트가
+전체 경로로 직접 호출합니다. 작업 스케줄러는 맨 환경에서 돌기 때문에, 어떤 셸에서
+`7z` 가 실행되더라도(예: conda 환경) 그것에 기대면 안 됩니다.
+
+PowerShell 에서는 `where` 가 `Where-Object` 의 별칭이라 아예 다른 명령이 실행됩니다.
+`where.exe 7z` 또는 `Get-Command 7z` 를 쓰십시오.
+
+### 제외 목록이 무시됨
+
+7-Zip 자체의 `-xr!이름` 스위치를 배치에 직접 적으면 **지연 확장이 `!` 를 먹어** 제외가
+조용히 사라집니다. 그래서 이 스크립트는 목록 파일(`EXCLUDE_LIST`)만 받습니다.
+목록 파일 경로에 공백이 있어도 인식되지 않으니 공백 없는 경로에 두십시오.
+
+로그의 `excluding names listed in ...` 줄로 실제 적용 여부를 확인할 수 있습니다.
+`WARN: EXCLUDE_LIST not found` 가 찍혔다면 경로가 틀린 것입니다.
+
+### 받는 쪽에서 압축을 못 품
+
+Windows 내장 `tar` 도 `Expand-Archive` 도 `.7z` 를 읽지 못합니다. 대체 경로가 없으므로
+받는 PC 에도 7-Zip 이 반드시 설치되어 있어야 합니다.
