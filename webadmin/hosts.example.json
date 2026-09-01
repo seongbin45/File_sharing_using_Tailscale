@@ -1,0 +1,44 @@
+{
+  "_comment": [
+    "Copy this to hosts.json next to it and edit. hosts.json is gitignored.",
+    "",
+    "address: the Tailscale MagicDNS name, or the 100.x.y.z tailnet address.",
+    "  Do NOT put a LAN address here. The point of going through Tailscale is",
+    "  that the same name works from anywhere, and that nothing is exposed",
+    "  outside the tailnet.",
+    "",
+    "password: leave null and the console asks for it and keeps it in memory",
+    "  only. Fill it in and it sits in plain text on disk - acceptable only if",
+    "  the file itself is protected. It is never sent anywhere but the host.",
+    "",
+    "role: 'sender' or 'receiver'. Decides which probe commands run and which",
+    "  panel is drawn."
+  ],
+
+  "hosts": [
+    {
+      "id": "sender",
+      "label": "보내는 PC",
+      "role": "sender",
+      "address": "desktop-nb8bfur",
+      "port": 22,
+      "username": "dicia",
+      "password": null,
+      "task": "TailscaleProjectBackup",
+      "scripts_dir": "C:\\Scripts",
+      "work_dir": "C:\\TempBackup"
+    },
+    {
+      "id": "receiver",
+      "label": "받는 PC",
+      "role": "receiver",
+      "address": "wisenesco-23031302",
+      "port": 22,
+      "username": "emergency",
+      "password": null,
+      "task": "TailscaleProjectReceive",
+      "scripts_dir": "C:\\Scripts",
+      "work_dir": "C:\\TempReceive"
+    }
+  ]
+}

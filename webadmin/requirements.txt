@@ -1,0 +1,6 @@
+# Pin exact versions: this runs unattended on someone's desktop, and a
+# surprise major release breaking the console is worse than being a few
+# months behind.
+fastapi==0.141.1
+uvicorn[standard]==0.41.0
+paramiko==5.0.0

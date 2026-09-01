@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tailscale 백업 관리 콘솔</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%234c8dff'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/vendor/xterm.css">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="dot-brand"></span>
+    <h1>Tailscale 백업 관리 콘솔</h1>
+  </div>
+  <div class="topbar-right">
+    <span id="backend-badge" class="badge badge-muted">확인 중</span>
+    <label class="auto">
+      <input type="checkbox" id="auto-refresh" checked>
+      <span>자동 새로고침</span>
+    </label>
+    <button id="refresh" class="btn btn-ghost" title="새로고침">↻</button>
+  </div>
+</header>
+
+<div id="notice" class="notice" hidden></div>
+
+<main class="layout">
+  <nav class="sidebar">
+    <div class="sidebar-title">호스트</div>
+    <ul id="host-list" class="host-list"></ul>
+    <div class="sidebar-foot" id="hosts-file"></div>
+  </nav>
+
+  <section class="content">
+    <div class="tabs" role="tablist">
+      <button class="tab is-active" data-tab="dashboard" role="tab">대시보드</button>
+      <button class="tab" data-tab="terminal" role="tab">터미널</button>
+      <button class="tab" data-tab="log" role="tab">로그</button>
+    </div>
+
+    <!-- 대시보드 -->
+    <div class="pane is-active" data-pane="dashboard">
+      <div id="dash-empty" class="empty">왼쪽에서 호스트를 고르십시오.</div>
+      <div id="dash" hidden>
+        <div class="actions">
+          <button class="btn" data-action="run">즉시 실행</button>
+          <button class="btn btn-ghost" data-action="toggle">일시중지 / 재개</button>
+          <span id="action-out" class="action-out"></span>
+        </div>
+        <div id="cards" class="cards"></div>
+        <section class="card card-wide">
+          <h2>최근 로그</h2>
+          <pre id="dash-log" class="log"></pre>
+        </section>
+      </div>
+    </div>
+
+    <!-- 터미널 -->
+    <div class="pane" data-pane="terminal">
+      <div class="term-bar">
+        <span id="term-state" class="badge badge-muted">연결 안 됨</span>
+        <button id="term-connect" class="btn">연결</button>
+        <button id="term-disconnect" class="btn btn-ghost" disabled>끊기</button>
+        <span class="term-hint">각 PC 의 셸에 그대로 붙습니다. 입력은 전부 전달됩니다.</span>
+      </div>
+      <div id="terminal" class="terminal"></div>
+    </div>
+
+    <!-- 로그 -->
+    <div class="pane" data-pane="log">
+      <div class="log-bar">
+        <label>줄 수
+          <select id="log-lines">
+            <option>40</option><option>100</option><option>200</option><option>500</option>
+          </select>
+        </label>
+        <button id="log-reload" class="btn btn-ghost">다시 읽기</button>
+      </div>
+      <pre id="full-log" class="log log-full"></pre>
+    </div>
+  </section>
+</main>
+
+<!-- 비밀번호 -->
+<dialog id="cred-dialog" class="cred">
+  <form method="dialog">
+    <h2>SSH 비밀번호</h2>
+    <p id="cred-target" class="cred-target"></p>
+    <input type="password" id="cred-password" autocomplete="off" placeholder="비밀번호">
+    <p class="cred-note">
+      이 서버의 메모리에만 남고 디스크에 저장되지 않습니다.
+      서버를 다시 시작하면 사라집니다.
+    </p>
+    <menu>
+      <button value="cancel" class="btn btn-ghost">취소</button>
+      <button value="ok" class="btn" id="cred-ok">확인</button>
+    </menu>
+  </form>
+</dialog>
+
+<!-- Vendored, not from a CDN: this console has to work on a machine with no
+     internet route of its own, and a dead CDN must not take the terminal
+     with it. webadmin/vendor.md records where these came from. -->
+<script src="/static/vendor/xterm.js"></script>
+<script src="/static/vendor/xterm-addon-fit.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
