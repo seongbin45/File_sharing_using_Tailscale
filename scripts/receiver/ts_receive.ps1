@@ -154,11 +154,16 @@ function Invoke-Native {
 }
 
 function Invoke-Git {
+    # Output is capped. A single commit here touches tens of thousands of
+    # files, and git happily names every one of them - enough to blow through
+    # the log rotation threshold in one run and bury anything worth reading.
     param([Parameter(Mandatory)][string[]]$GitArgs, [switch]$Quiet)
     $result = Invoke-Native -Command 'git' -Arguments (@('-C', $RepoDir) + $GitArgs)
     if (-not $Quiet) {
-        foreach ($line in $result.Output) {
-            if ("$line".Trim()) { Write-Log "    git: $line" }
+        $lines = @($result.Output | Where-Object { "$_".Trim() })
+        foreach ($line in ($lines | Select-Object -First 20)) { Write-Log "    git: $line" }
+        if ($lines.Count -gt 20) {
+            Write-Log "    git: ... $($lines.Count - 20) more lines suppressed"
         }
     }
     return $result.Code
@@ -517,7 +522,8 @@ function Import-Snapshot {
         if (-not (Test-RepoDirty)) {
             Write-Log "    nothing changed, no commit"
         } else {
-            if ((Invoke-Git @('commit', '-m', "snapshot $Stamp")) -ne 0) {
+            # -q, or git lists every file it just recorded.
+            if ((Invoke-Git @('commit', '-q', '-m', "snapshot $Stamp")) -ne 0) {
                 Write-Log "    FAIL: git commit"
                 return $false
             }
