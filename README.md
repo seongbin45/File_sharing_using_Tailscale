@@ -99,7 +99,9 @@ Windows PC 의 프로젝트 루트를 **하루 한 번 통째로** 압축해 다
 
 7-Zip 은 설치해도 **PATH 에 등록되지 않습니다.** 스크립트가 `SEVENZIP` 설정값의 전체 경로로
 직접 호출하는 이유입니다. 작업 스케줄러는 맨 환경에서 돌기 때문에 PATH 에 기대면 안 됩니다.
-없으면 https://www.7-zip.org 에서 설치하십시오.
+
+화면 없이 SSH 터미널만으로 7-Zip 과 git 을 설치하는 절차는
+[docs/SETUP_TOOLS.md](docs/SETUP_TOOLS.md) 에 있습니다.
 
 ---
 
@@ -110,6 +112,7 @@ Windows PC 의 프로젝트 루트를 **하루 한 번 통째로** 압축해 다
 
 | 문서 | 언제 보는가 |
 |---|---|
+| [docs/SETUP_TOOLS.md](docs/SETUP_TOOLS.md) | **아무것도 없는 PC 에서 시작할 때.** 터미널만으로 7-Zip·git 설치 |
 | [scripts/install.md](scripts/install.md) | **보내는 쪽을 처음 설치할 때.** SSH(cmd) 명령 전문 |
 | [docs/RECEIVER.md](docs/RECEIVER.md) | **받는 쪽.** git 관리 구조, 90일 초기화, 복원 방법 |
 | [scripts/receiver/install.md](scripts/receiver/install.md) | 받는 쪽 설치 절차 |

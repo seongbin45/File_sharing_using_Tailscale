@@ -17,10 +17,10 @@ where wscript
 powershell -NoProfile -Command "$PSVersionTable.PSVersion"
 ```
 
-- **`git` 이 없으면 이 방식은 쓸 수 없습니다.** https://git-scm.com/download/win 에서 설치하고
-  설치 중 "Add to PATH" 를 켜십시오.
+- **`git` 이 없으면 이 방식은 쓸 수 없습니다.** 설치 중 "Add to PATH" 를 켜십시오.
 - **7-Zip 도 필수입니다.** 보내는 쪽이 `.7z` 로 압축해 보내는데, Windows 내장 `tar` 도
-  `Expand-Archive` 도 `.7z` 를 읽지 못합니다. 없으면 https://www.7-zip.org 에서 설치하십시오.
+  `Expand-Archive` 도 `.7z` 를 읽지 못합니다. 둘 다 없으면 터미널만으로 설치하는 절차가
+  [SETUP_TOOLS.md](../../docs/SETUP_TOOLS.md) 에 있습니다.
   경로가 다르면 `$SevenZip` 설정값을 고쳐야 합니다. PATH 에는 등록되지 않으므로 스크립트가
   전체 경로로 직접 호출합니다.
 - PowerShell 은 5.1 이상이면 됩니다(Windows 10/11 기본).

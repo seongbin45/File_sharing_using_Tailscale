@@ -17,8 +17,9 @@ where wscript
 tailscale status
 ```
 
-- **7-Zip 이 필수입니다.** 없으면 https://www.7-zip.org 에서 설치하십시오. 설치해도 PATH 에는
-  등록되지 않으므로, 스크립트는 `SEVENZIP` 설정값의 전체 경로로 직접 호출합니다.
+- **7-Zip 이 필수입니다.** 없으면 터미널만으로 설치하는 절차가
+  [SETUP_TOOLS.md](../docs/SETUP_TOOLS.md) 에 있습니다. 설치해도 PATH 에는 등록되지 않으므로,
+  스크립트는 `SEVENZIP` 설정값의 전체 경로로 직접 호출합니다.
   경로가 다르면 3단계에서 그 값을 고쳐야 합니다.
 - **받는 PC 에도 7-Zip 이 필요합니다.** `tar` 와 `Expand-Archive` 는 `.7z` 를 못 읽습니다.
 - `tailscale status` 출력에서 **전송할 대상 기기들의 이름 철자와 온라인 여부**를 확인하고

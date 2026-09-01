@@ -196,7 +196,7 @@ CRLF 를 강제하므로, git 을 거치지 않고 파일을 만들 때만 주�
 dir "C:\Program Files\7-Zip\7z.exe"
 ```
 
-없으면 https://www.7-zip.org 에서 설치하고, 경로가 다르면 설정값을 고치십시오.
+없으면 [SETUP_TOOLS.md](SETUP_TOOLS.md) 의 절차로 설치하고, 경로가 다르면 설정값을 고치십시오.
 
 ### `where 7z` 가 아무것도 못 찾음
 

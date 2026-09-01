@@ -14,7 +14,7 @@
 
 | 항목 | 확인 명령 | 비고 |
 |---|---|---|
-| **7-Zip** | `dir "C:\Program Files\7-Zip\7z.exe"` | 양쪽 PC 모두 필수. PATH 에 등록되지 않으므로 전체 경로를 설정값으로 씀 |
+| **7-Zip** | `dir "C:\Program Files\7-Zip\7z.exe"` | 양쪽 PC 모두 필수. PATH 에 등록되지 않으므로 전체 경로를 설정값으로 씀. 설치는 [SETUP_TOOLS.md](SETUP_TOOLS.md) |
 | `wscript` | `where wscript` | 창 숨김 래퍼 실행에 필요 |
 | `tailscale` | `tailscale status` | PATH 에 잡혀 있어야 함 |
 | PowerShell | `powershell -NoProfile -Command "$PSVersionTable.PSVersion"` | 5.1 이상. 타임스탬프·보존 정리에 사용 |
