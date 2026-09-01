@@ -93,22 +93,35 @@ $RepoName     = Split-Path $RepoDir -Leaf
 #   2 at least one archive failed and was left for the next run
 $script:ExitCode = 0
 
-# UTF-8 without a byte order mark. The default -Encoding UTF8 in Windows
-# PowerShell writes a BOM, which shows up as stray characters when the log
-# or Day_count.txt is read with "type" in cmd.
-$script:Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+# Two encodings, for two different readers.
+#
+# Committed text files (Day_count.txt, .ts_state.json) are UTF-8 with a BOM.
+# Project names here are frequently non-ASCII, and Windows PowerShell 5.1
+# decodes a file with the system code page unless a BOM says otherwise - so a
+# BOM-less file round-trips "음원+악보병합 프로젝트" into mojibake, which for
+# the state file would silently reset that project's counters on every run.
+#
+# The log is written in the system code page instead. It is read locally with
+# "type" or Get-Content and never committed, and Windows exception messages in
+# it are localised - UTF-8 would make those unreadable in exactly the moment
+# the log matters most.
+$script:Utf8Bom  = New-Object System.Text.UTF8Encoding($true)
+$script:LogCodec = [System.Text.Encoding]::Default
 
 # ------------------------------- helpers ----------------------------------
 
 function Write-TextLines {
-    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string[]]$Lines)
-    [System.IO.File]::WriteAllLines($Path, $Lines, $script:Utf8NoBom)
+    # $Lines is deliberately not Mandatory: in Windows PowerShell a mandatory
+    # [string[]] refuses to bind an array containing an empty string, and every
+    # one of these files has blank lines in it.
+    param([Parameter(Mandatory)][string]$Path, [string[]]$Lines = @())
+    [System.IO.File]::WriteAllLines($Path, $Lines, $script:Utf8Bom)
 }
 
 function Write-Log {
     param([string]$Message)
     $line = '[{0}] {1}{2}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message, [Environment]::NewLine
-    [System.IO.File]::AppendAllText($LogFile, $line, $script:Utf8NoBom)
+    [System.IO.File]::AppendAllText($LogFile, $line, $script:LogCodec)
 }
 
 function Rotate-Log {
@@ -214,7 +227,9 @@ function Read-State {
     }
     if (-not (Test-Path -LiteralPath $StateFile)) { return $state }
     try {
-        $raw = Get-Content -LiteralPath $StateFile -Raw | ConvertFrom-Json
+        # -Encoding UTF8 explicitly: the file is ours and always UTF-8, and
+        # guessing by code page would corrupt non-ASCII project names.
+        $raw = Get-Content -LiteralPath $StateFile -Raw -Encoding UTF8 | ConvertFrom-Json
         foreach ($k in @('snapshot_count', 'reset_count')) {
             if ($null -ne $raw.$k) { $state[$k] = [int]$raw.$k }
         }
