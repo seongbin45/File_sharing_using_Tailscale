@@ -2,149 +2,121 @@
 
 > 시스템 구조와 용어는 [README](../README.md) 를 참고하십시오.
 
-2026-08-30, 실제 기기에서 수행한 검증의 전문입니다. 각 항목은 **무엇을 어떻게 확인했고
-실제 출력이 무엇이었는지**를 남깁니다. 이후 코드를 고칠 때 회귀 테스트의 기준으로 쓰십시오.
-
-> ## 주의 — 이 기록은 이전 설계의 것입니다
->
-> 아래 1~5번은 **프로젝트를 하나씩 순환하며 매시간 보내던 설계**에서 수행한 검증입니다.
-> 그 뒤 프로젝트가 23개로 늘면서 순환의 이점이 사라져 **하루 1회 전체 스냅샷** 방식으로
-> 바뀌었습니다([README](../README.md) 의 "왜 하루 한 번 전체인가").
->
-> **그대로 유효한 것** — Taildrop 전송과 롤백(3번), pending 보관·재시도(4번),
-> 작업 스케줄러 XML 등록과 VBS 경유 실행(5번), `tailscale file cp` 가 실패 시 0이 아닌
-> 종료 코드를 반환한다는 전제.
->
-> **무효가 된 것** — 폴더 순환(2번). 순환 로직 자체가 제거됐습니다.
->
-> **새로 검증해야 하는 것**
->
-> | 항목 | 왜 |
-> |---|---|
-> | 6 GB 단일 파일 Taildrop 전송 | 검증된 최대 크기는 328 MB 였습니다 |
-> | 여유 공간 확인 로직 | 새로 들어간 코드입니다 |
-> | 하루 1회 트리거 · `StartWhenAvailable` 보충 실행 | 트리거 구성이 바뀌었습니다 |
-> | 받는 쪽 전체 | 한 번도 실행된 적이 없습니다 |
-> | 90일 초기화와 세대 보관 | 한 번도 실행된 적이 없습니다 |
-> | `.git` → `.git_archived` 변환이 실제로 추적되는지 | 받는 쪽의 가장 중요한 동작입니다 |
+실제 기기에서 수행한 검증의 전문입니다. 각 항목은 **무엇을 어떻게 확인했고 실제 출력이
+무엇이었는지**를 남깁니다. 코드를 고친 뒤 회귀 테스트의 기준으로 쓰십시오.
 
 ## 검증 환경
 
 | 항목 | 값 |
 |---|---|
-| 송신 PC | `DESKTOP-NB8BFUR`, 계정 `dicia` |
+| 보내는 PC | `DESKTOP-NB8BFUR`, 계정 `dicia`, 비관리자 OpenSSH → cmd |
+| 받는 PC | `WISENESCO-23031`, SSH 계정 `Emergency`, Taildrop 수신 계정 `WISENESCO` |
 | OS | Windows, 한국어 표시 언어, 도메인 미가입(WORKGROUP) |
-| 접근 경로 | OpenSSH 서버 → cmd, **비관리자 권한** |
-| 대상 | `C:\Users\DiCiA\PycharmProjects` |
+| 대상 | `C:\Users\DiCiA\PycharmProjects` — **6,298,504,955 B (6.30 GB) / 32,095 파일 / 프로젝트 23개** |
+| 7-Zip | `C:\Program Files\7-Zip\7z.exe` (양쪽 PC, PATH 에는 없음) |
 | 수신 기기 | `wisenesco-23031302` (1순위), `laptop-7gmpubqc`, `desktop-dvj3pqk`, `desktop-0g92n63` |
-| 테스트 프로젝트 | `A1-1_Project`(zip 63,530 B), `A1-2_Project`(zip 343,628,118 B) |
 
 ---
 
-## 1. 압축 · 전송 기본 동작
+## 1. 압축 포맷 선정 (2026-08-31)
+
+**결과: 7z `-mx=5` 채택**
+
+프로젝트 하나(`음원+악보병합 프로젝트`)로 실측:
+
+| 방식 | 크기 | zip 대비 | 압축 시간 |
+|---|---|---|---|
+| zip (`tar -a`) | 829.2 MB | — | 47.6초 |
+| 7z `-mx=1` | 745.6 MB | **−10.1%** | **22.6초** |
+| 7z `-mx=5` | 656.9 MB | **−20.8%** | 73.5초 |
+
+`-mx=1` 이 zip 보다 **작으면서 두 배 빠릅니다.** Windows 내장 `tar` 의 deflate 는 단일
+스레드이고 7-Zip 은 `-mmt` 로 모든 코어를 쓰기 때문입니다. zip 을 유지할 이유가 없습니다.
+
+**전체 실측** — `-mx=5` 로 6.30 GB → **4,741,108,614 B (4.74 GB / 4.42 GiB)**.
+프로젝트 하나로 예측한 −21% 와 일치합니다.
+
+---
+
+## 2. 대용량 단일 파일 Taildrop 전송
+
+**결과: 통과**
+
+- 4.42 GiB 파일 1개, 13:27 전송 시작 → 수신 측 13:40 도착. **약 13분, 실효 약 5.8 MB/s**
+- 전송 시작 직후 표시는 980 KB/s 였으나 램프업 구간이었고, 완주 평균은 그 6배
+- 수신 PC 의 `Downloads` 에 4.42 GB 로 정확히 도착
+
+검증된 최대 크기가 328 MB 였던 이전 기록을 대체합니다.
+
+---
+
+## 3. 받는 쪽 종단 처리
+
+**결과: 통과.** 로그 원문:
+
+```
+[2026-09-01 13:56:43] running as WORKGROUP\emergency (profile C:\Users\Emergency)
+[2026-09-01 13:56:43] watching C:\Users\WISENESCO\Downloads -> C:\Users\WISENESCO\Downloads\PycharmProjects
+[2026-09-01 13:56:43] initialising git repository at C:\Users\WISENESCO\Downloads\PycharmProjects
+[2026-09-01 13:56:43] ingesting PycharmProjects_2026_08_31_13_27.7z
+[2026-09-01 13:58:13]     renamed 13 nested .git -> .git_archived
+...
+[2026-09-01 14:12:31]     committed: snapshot 2026_08_31_13_27
+[2026-09-01 14:12:31]     tagged 2026_08_31_13_27
+[2026-09-01 14:12:31]     removed zip
+[2026-09-01 14:12:31] === run end (exit 0) ===
+```
+
+- **압축 해제 90초** (13:56:43 → 13:58:13)
+- **전체 회차 약 16분** (13:56:43 → 14:12:31). 대부분이 `git add -A` 와 첫 커밋
+- 커밋 후 압축 파일 자동 삭제, 종료 코드 `0`
+
+---
+
+## 4. `.git` 이력 보존 — 이 백업의 존재 이유
+
+**결과: 통과.** 가장 중요한 확인입니다.
+
+```powershell
+(git -C $repo ls-files "*/.git_archived/*").Count
+978
+```
+
+`.git` 디렉터리 13개가 `.git_archived` 로 변환되어 **978개 파일이 실제로 추적**되고 있습니다.
+변환하지 않았다면 git 이 embedded repository 로 처리해 이 978개가 전부 빠졌을 것이고,
+겉으로는 아무 문제 없이 백업이 성공한 것처럼 보였을 것입니다.
+
+---
+
+## 5. 커밋 · 태그 · 저장소 크기
 
 **결과: 통과**
 
 ```
-[16:34:43.94] target folder: A1-2_Project (previous: A1-1_Project)
-[16:34:43.94] creating archive: C:\TempBackup\A1-2_Project_2026_08_30_16_34.zip
-[16:34:50.91] archive ready, 343628118 bytes
-[16:35:37.93] sent A1-2_Project_2026_08_30_16_34.zip -> wisenesco-23031302
-[16:35:37.97] sent and removed local archive
-[16:35:37.98] === run end (exit 0) ===
+2b9faaf5 (HEAD -> master, tag: 2026_08_31_13_27) snapshot 2026_08_31_13_27
+
+in-pack:   19,322 objects
+size-pack: 4.03 GiB
 ```
 
-- 압축 328MB 에 약 7초, 전송에 약 47초
-- 파일명 타임스탬프 `_2026_08_30_16_34` 정상
-- 전송 후 로컬 zip 삭제 확인
-- **수신 기기에서 파일 도착을 육안 확인함**
+스냅샷 하나가 커밋 하나이고 타임스탬프 태그가 붙습니다. `git checkout 2026_08_31_13_27` 로
+그 시점 전체를 복원할 수 있습니다.
+
+**실제 디스크 점유 = 작업 트리 6.3 GB + `.git` 4.03 GiB ≈ 10.3 GB.**
+미디어는 git 이 압축하지 못하지만 나머지에서 줄어 추정치(12 GB)보다 작게 나왔습니다.
 
 ---
 
-## 2. 폴더 순환
+## 6. `Day_count.txt`
 
 **결과: 통과**
 
-```
-[16:26:06.44] target folder: A1-1_Project (previous: )
-[16:34:43.94] target folder: A1-2_Project (previous: A1-1_Project)
-```
+관리 디렉터리 최상위 요약에 프로젝트 23개가 전부, `count 1` · `first = last =
+2026_08_31_13_27` 로 기록됐습니다. `음원+악보병합 프로젝트`, `코디세이 3단계 미션-참고자료`
+같은 한글 이름이 깨지지 않습니다.
 
-- 최초 실행(상태 파일 없음) → 첫 폴더 선택
-- 두 번째 실행 → 다음 폴더로 이동, `previous` 에 직전 폴더 기록
-- 상태 파일 삭제 시 첫 폴더로 복귀
-
----
-
-## 3. 전송 롤백
-
-**결과: 통과.** 이 검증으로 **`tailscale file cp` 가 실패 시 0 이 아닌 종료 코드를 반환한다**는
-전제가 확인되었습니다. 롤백 로직 전체가 이 전제에 의존합니다.
-
-`TARGETS` 첫 항목을 존재하지 않는 이름으로 바꿔 실행:
-
-```
-error looking up IP of "nosuchdevice-test": lookup nosuchdevice-test: no such host
-[16:39:08.05] failed  A1-1_Project_2026_08_30_16_39.zip -> nosuchdevice-test
-[16:39:08.33] sent A1-1_Project_2026_08_30_16_39.zip -> laptop-7gmpubqc
-[16:39:08.34] === run end (exit 0) ===
-```
-
-- 1순위 실패 → 2순위 승계
-- `tailscale` 자체 오류 메시지도 로그에 함께 기록됨
-- 2순위 기기에서도 도착 확인
-
----
-
-## 4. pending 보관 · 재전송 · 보존
-
-**결과: 통과**
-
-`TARGETS` 4개 전부를 가짜 이름으로 바꿔 실행:
-
-```
-[16:42:28.07] failed  A1-1_Project_2026_08_30_16_42.zip -> nodev1
-[16:42:30.82] failed  A1-1_Project_2026_08_30_16_42.zip -> nodev2
-[16:42:33.58] failed  A1-1_Project_2026_08_30_16_42.zip -> nodev3
-[16:42:36.33] failed  A1-1_Project_2026_08_30_16_42.zip -> nodev4
-[16:42:36.34] all targets failed - archive moved to pending, will retry next run
-[16:42:36.61] === run end (exit 2) ===
-```
-
-원복 후 재실행:
-
-```
-[16:43:22.86] === run start ===
-[16:43:23.17] sent A1-1_Project_2026_08_30_16_42.zip -> wisenesco-23031302
-[16:43:23.17] pending flushed: A1-1_Project_2026_08_30_16_42.zip
-[16:43:23.37] target folder: A1-1_Project (previous: )
-[16:43:23.37] creating archive: C:\TempBackup\A1-1_Project_2026_08_30_16_43.zip
-```
-
-- 4개 전부 순차 시도 후 pending 이동, 종료 코드 `2`
-- 다음 실행에서 **새 압축보다 먼저** pending 재전송
-- 성공 후 pending 폴더 비워짐 (`dir` 로 0개 파일 확인)
-
----
-
-## 5. 작업 스케줄러 등록 · 실행
-
-**결과: 통과**
-
-```
-LastRunTime        : 2026-08-30 오후 4:54:53
-LastTaskResult     : 0
-NextRunTime        : 2026-08-30 오후 5:00:00
-NumberOfMissedRuns : 0
-
-MultipleInstances  : IgnoreNew
-StartWhenAvailable : True
-ExecutionTimeLimit : PT2H
-```
-
-- XML 임포트 성공, 트리거 3종(`CalendarTrigger` PT1H / `LogonTrigger` / `EventTrigger`) 등록
-- `EventTrigger` 의 `Power-Troubleshooter ... EventID=1` 구독 확인
-- 스케줄러가 VBS 를 통해 실행한 회차가 로그에 정상 기록되고 `exit 0`
+표의 열 정렬은 한글에서 어긋납니다. 한글이 화면상 2칸을 차지하는데 서식 문자열은 1칸으로
+세기 때문이며, 표시상의 문제일 뿐 기록되는 값에는 영향이 없습니다.
 
 ---
 
@@ -152,12 +124,13 @@ ExecutionTimeLimit : PT2H
 
 | 항목 | 이유 |
 |---|---|
-| **창 숨김 동작** | SSH 로는 물리 화면을 볼 수 없음. 정시 실행 때 본체 모니터 확인 필요 |
-| **절전 해제 트리거** | 실제로 절전 → 복귀시켜 로그에 실행 기록이 남는지 확인 필요 |
-| **로그온 트리거** | 재부팅 후 확인 필요 |
-| **놓친 실행 보충** | PC 를 꺼 둔 뒤 켜서 `NumberOfMissedRuns` 와 보충 실행 확인 필요 |
-| **로그 회전** | 로그가 5MB 를 넘어야 발동. 실사용 중 자연 도달 |
-| **pending 3일 경과 삭제** | `LastWriteTime` 을 과거로 조작해야 확인 가능 |
+| **90일 초기화와 세대 보관** | 시간 경과가 필요. 코드 경로가 한 번도 실행된 적 없음 |
+| **양쪽 작업 스케줄러 등록** | 아직 등록하지 않음 |
+| **창 숨김 동작** | SSH 로는 물리 화면을 볼 수 없음 |
+| **놓친 실행 보충(`StartWhenAvailable`)** | PC 를 꺼 둔 뒤 켜서 확인 필요 |
+| **로그 회전** | 5MB 도달 필요 |
+| **pending 재전송** | 전체 스냅샷 방식에서는 미실행. 순환 설계에서는 통과했고 코드는 동일 |
+| **긴 실행 중 절전 진입** | 한 회차가 20분 이상이라 실사용에서 드러날 수 있음 |
 
 ---
 
@@ -168,16 +141,62 @@ ExecutionTimeLimit : PT2H
 | 결함 | 증상 |
 |---|---|
 | `if <조건> A & B` | `B` 가 조건과 무관하게 항상 실행 → **롤백 2~4순위가 완전히 죽음** |
-| `echo %VAR% > file` | 값 뒤 공백 기록 → 비교 영구 실패 → **매번 첫 폴더만 백업** |
+| `echo %VAR% > file` | 값 뒤 공백 기록 → 비교 영구 실패 |
 | `tar -C <경로> *` | `*` 가 현재 디렉터리 기준으로 해석될 위험 |
-| robocopy 종료 코드 | 성공 시에도 1~7 반환. `equ 0` 판정은 오판 (robocopy 제거로 해소) |
+| robocopy 종료 코드 | 성공 시에도 1~7 반환. `equ 0` 판정은 오판 |
+| `-xr!이름` | 지연 확장이 `!` 를 먹어 **제외가 조용히 무시됨**. 목록 파일 방식으로 대체 |
 
 ### 실제 실행 중 드러난 것
 
 | 커밋 | 결함 | 증상 |
 |---|---|---|
-| `ea5bd94` | 로그 메시지의 `>` 가 리디렉션으로 승격 | `sent x.zip -> host` 한 줄이 로그가 아니라 `host` 라는 이름의 파일로 빠져나감. **어느 기기가 받았는지 알 수 없게 됨** |
-| `37d6ed0` | `%USERDOMAIN%` 이 `WORKGROUP` 반환 | `schtasks` 등록 시 `계정 이름과 보안 식별자 사이에 매핑이 이루어지지 않았습니다` |
-| `8e86d69` | `findstr /i "Last"` | 한글 Windows 에서 `마지막 결과` 로 출력되어 매칭 실패. **잘못된 값을 못 잡고 지나침** |
+| `ea5bd94` | 로그 메시지의 `>` 가 리디렉션으로 승격 | `sent x -> host` 한 줄이 로그가 아니라 `host` 라는 이름의 파일로 빠져나감 |
+| `37d6ed0` | `%USERDOMAIN%` 이 `WORKGROUP` 반환 | `schtasks` 등록 시 SID 매핑 실패 |
+| `8e86d69` | `findstr /i "Last"` | 한글 Windows 에서 매칭 실패. **잘못된 값을 못 잡고 지나침** |
+| `d46053a` | `$env:USERPROFILE` 로 경로 유도 | 계정이 둘인 환경에서 엉뚱한 프로필을 보고 **`no archives to ingest` 로 조용히 성공 종료** |
+| `27aae56` | `Mandatory [string[]]` | 빈 문자열이 든 배열 바인딩 거부 → 크래시 |
+| `27aae56` | 인코딩 | 로그가 깨져 나왔고, 같은 방식으로 쓰던 `.ts_state.json` 은 한글 프로젝트명이 왕복에서 깨져 **카운터가 매 실행 초기화될 뻔함** |
+| `dea8b8e` | `git commit` 출력 전량 기록 | 32,000줄이 한 회차에 기록되어 로그 회전 기준을 즉시 초과 |
+
+마지막 두 건은 **겉으로 아무 이상 없이 잘못 동작할 뻔한** 유형입니다. 로그가 깨진 덕에
+인코딩 문제가 드러났고, 그 과정에서 상태 파일 쪽의 더 심각한 문제가 함께 잡혔습니다.
 
 증상별 대처는 [TROUBLESHOOTING.md](TROUBLESHOOTING.md) 를 참고하십시오.
+
+---
+
+## 부록 — 이전 순환 설계의 검증 기록 (2026-08-30)
+
+프로젝트를 하나씩 순환하며 매시간 보내던 설계에서 수행한 검증입니다. 프로젝트가 23개로
+늘면서 전체 스냅샷 방식으로 바뀌었지만, 아래 결과 중 일부는 그대로 유효합니다.
+
+**여전히 유효** — `tailscale file cp` 가 실패 시 0이 아닌 종료 코드를 반환한다는 전제,
+전송 롤백(1순위 실패 → 2순위 승계), pending 보관·재전송, 작업 스케줄러 XML 등록과
+VBS 경유 실행.
+
+**무효** — 폴더 순환. 로직 자체가 제거됐습니다.
+
+### 전송 롤백
+
+```
+error looking up IP of "nosuchdevice-test": lookup nosuchdevice-test: no such host
+[16:39:08.05] failed  A1-1_Project_2026_08_30_16_39.zip -> nosuchdevice-test
+[16:39:08.33] sent A1-1_Project_2026_08_30_16_39.zip -> laptop-7gmpubqc
+```
+
+### pending 보관 · 재전송
+
+4개 대상을 전부 가짜 이름으로 두면 종료 코드 `2` 로 pending 이동, 원복 후 재실행에서
+**새 압축보다 먼저** 재전송되고 pending 이 비워짐을 확인했습니다.
+
+### 작업 스케줄러
+
+```
+LastTaskResult     : 0
+NextRunTime        : 2026-08-30 오후 5:00:00
+MultipleInstances  : IgnoreNew
+StartWhenAvailable : True
+```
+
+XML 임포트로 트리거가 등록되고, 스케줄러가 VBS 를 통해 실행한 회차가 로그에 정상 기록됨을
+확인했습니다. 현재 설계는 트리거 구성이 하루 1회로 바뀌었으므로 재등록과 재확인이 필요합니다.
