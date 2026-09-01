@@ -1,32 +1,43 @@
 <?xml version="1.0" encoding="UTF-16"?>
 <!--
-  Scheduled task definition for the Tailscale project backup.
+  Scheduled task definition for the receiving side.
 
-  One trigger: 04:00 daily.
-
-  There is deliberately no logon or resume-from-sleep trigger here. A run
-  archives and ships the entire project root - around 6 GB, roughly twenty
-  minutes - so firing one on every logon or wake would be costly and
-  pointless. StartWhenAvailable covers the case the extra triggers were
-  there for: if the machine is off at 04:00, the task runs once soon after
-  it next comes up.
+  Three triggers, same shape as the sending side:
+    1. CalendarTrigger  - daily boundary + 15 minute repetition
+    2. LogonTrigger     - catches archives that arrived while the PC was off
+    3. EventTrigger     - System log, Microsoft-Windows-Power-Troubleshooter
+                          event 1 = the system resumed from sleep/hibernate
 
   __USERID__ is replaced with the real account during installation.
   This file MUST be UTF-16 encoded before schtasks /create /xml will accept it.
 -->
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>Archives C:\Users\DiCiA\PycharmProjects whole, once a day, and sends it over Tailscale Taildrop.</Description>
-    <URI>\TailscaleProjectBackup</URI>
+    <Description>Ingests project archives arriving via Taildrop into a git-managed directory.</Description>
+    <URI>\TailscaleProjectReceive</URI>
   </RegistrationInfo>
   <Triggers>
     <CalendarTrigger>
-      <StartBoundary>2026-01-01T04:00:00</StartBoundary>
+      <Repetition>
+        <Interval>PT15M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+      <StartBoundary>2026-01-01T00:00:00</StartBoundary>
       <Enabled>true</Enabled>
       <ScheduleByDay>
         <DaysInterval>1</DaysInterval>
       </ScheduleByDay>
     </CalendarTrigger>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>__USERID__</UserId>
+      <Delay>PT1M</Delay>
+    </LogonTrigger>
+    <EventTrigger>
+      <Enabled>true</Enabled>
+      <Subscription>&lt;QueryList&gt;&lt;Query Id="0" Path="System"&gt;&lt;Select Path="System"&gt;*[System[Provider[@Name='Microsoft-Windows-Power-Troubleshooter'] and EventID=1]]&lt;/Select&gt;&lt;/Query&gt;&lt;/QueryList&gt;</Subscription>
+      <Delay>PT1M</Delay>
+    </EventTrigger>
   </Triggers>
   <Principals>
     <Principal id="Author">
@@ -41,7 +52,7 @@
     <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
     <AllowHardTerminate>true</AllowHardTerminate>
     <StartWhenAvailable>true</StartWhenAvailable>
-    <RunOnlyIfNetworkAvailable>true</RunOnlyIfNetworkAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
     <IdleSettings>
       <StopOnIdleEnd>false</StopOnIdleEnd>
       <RestartOnIdle>false</RestartOnIdle>
@@ -51,13 +62,13 @@
     <Hidden>false</Hidden>
     <RunOnlyIfIdle>false</RunOnlyIfIdle>
     <WakeToRun>false</WakeToRun>
-    <ExecutionTimeLimit>PT4H</ExecutionTimeLimit>
+    <ExecutionTimeLimit>PT2H</ExecutionTimeLimit>
     <Priority>7</Priority>
   </Settings>
   <Actions Context="Author">
     <Exec>
       <Command>wscript.exe</Command>
-      <Arguments>"C:\Scripts\ts_backup_hidden.vbs"</Arguments>
+      <Arguments>"C:\Scripts\ts_receive_hidden.vbs"</Arguments>
     </Exec>
   </Actions>
 </Task>

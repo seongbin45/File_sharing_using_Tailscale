@@ -12,12 +12,15 @@
 ## 1단계 — 사전 확인
 
 ```cmd
-tar --version
+dir "C:\Program Files\7-Zip\7z.exe"
 where wscript
 tailscale status
 ```
 
-- `tar` 는 Windows 10 1803 이상에 기본 포함되어 있습니다. 없으면 이 방식 자체를 쓸 수 없습니다.
+- **7-Zip 이 필수입니다.** 없으면 https://www.7-zip.org 에서 설치하십시오. 설치해도 PATH 에는
+  등록되지 않으므로, 스크립트는 `SEVENZIP` 설정값의 전체 경로로 직접 호출합니다.
+  경로가 다르면 3단계에서 그 값을 고쳐야 합니다.
+- **받는 PC 에도 7-Zip 이 필요합니다.** `tar` 와 `Expand-Archive` 는 `.7z` 를 못 읽습니다.
 - `tailscale status` 출력에서 **전송할 대상 기기들의 이름 철자와 온라인 여부**를 확인하고
   메모해 두십시오. 3단계에서 그대로 입력해야 합니다.
   (이 저장소의 기본값은 `wisenesco-23031302`, `laptop-7gmpubqc`, `desktop-dvj3pqk`,
@@ -66,7 +69,7 @@ mkdir C:\Scripts -Force
 ## 3단계 — 설정 조정
 
 `C:\Scripts\ts_backup.bat` 상단의 `CONFIG` 블록을 자기 환경에 맞게 고칩니다.
-**최소한 `BASE_DIR`, `STATE_FILE`, `TARGETS` 세 개는 반드시 확인해야 합니다.**
+**최소한 `BASE_DIR`, `TARGETS`, `SEVENZIP` 세 개는 반드시 확인해야 합니다.**
 각 값의 의미는 [README 의 설정 변수](../README.md#설정-변수), 이식 시 고칠 값 전체는
 [PORTING.md](../docs/PORTING.md) 를 보십시오.
 
@@ -85,7 +88,7 @@ powershell -NoProfile -Command "$p='C:\Scripts\ts_backup.bat'; $x=(Get-Content $
 이 설치 과정에서 가장 흔한 실수입니다.
 
 ```cmd
-powershell -NoProfile -Command "Select-String -Path 'C:\Scripts\ts_backup.bat' -Pattern '^set .(BASE_DIR|STATE_FILE|WORK_DIR|TARGETS)='"
+powershell -NoProfile -Command "Select-String -Path 'C:\Scripts\ts_backup.bat' -Pattern '^set .(BASE_DIR|WORK_DIR|MIN_FREE_MB|SEVENZIP|TARGETS)='"
 ```
 
 잘못 고쳤으면 원본을 다시 복사해 처음부터 하면 됩니다.
@@ -112,19 +115,23 @@ C:\Scripts\ts_backup.bat
 type C:\TempBackup\backup.log
 ```
 
-로그에 `archive ready, <바이트수> bytes` 와 `DRY_RUN=1 - skipping transfer` 가 나와야 합니다.
+로그에 `free space on work volume: <MB>`, `creating archive: ... (LZMA2 -mx=5)`,
+`archive ready, <바이트수> bytes`, `DRY_RUN=1 - skipping transfer` 가 나와야 합니다.
 
-### 4-2. 순환
+### 4-2. 규모 판단
 
-```cmd
-C:\Scripts\ts_backup.bat
-C:\Scripts\ts_backup.bat
-for /f "delims=" %A in (C:\Users\DiCiA\backup_state.txt) do @echo [%A]
-```
+여기서 나온 **압축 크기와 압축에 걸린 시간**을 확인하십시오. 이 값이 하루 1회로
+감당 가능한지가 이 설계의 전제입니다.
 
-로그의 `target folder:` 가 실행마다 달라져야 하고, 상태 파일은 `[ProjectA]` 처럼
-**대괄호가 이름에 딱 붙어야** 합니다. `[ProjectA ]` 처럼 뒤에 공백이 보이면 순환이
-첫 폴더에 고착됩니다.
+전송 시간은 압축 크기를 관측 속도(약 7 MB/s)로 나눈 값이 대략의 기준입니다.
+6 GB 라면 15분 안팎입니다. 감당이 안 되면 `ts_backup_task.xml` 의 `<DaysInterval>` 을
+늘리거나 `EXCLUDE_LIST` 를 도입해야 합니다.
+
+압축 시간이 지나치게 길면 `SEVENZIP_LEVEL` 을 `1` 로 낮추십시오. 실측 기준으로 `-mx=1` 은
+`-mx=5` 보다 3배 이상 빠르면서도 여전히 zip 보다 작습니다.
+
+작업 볼륨 여유 공간이 압축 하나를 담을 만큼 있는지도 함께 보십시오.
+`MIN_FREE_MB` 는 그 방어선입니다.
 
 ### 4-3. 실제 전송
 
@@ -136,7 +143,7 @@ for /f "delims=" %A in (C:\Users\DiCiA\backup_state.txt) do @echo [%A]
 `TARGETS` 의 첫 항목만 존재하지 않는 이름으로 바꿔 실행하면 로그에
 `failed ... -> <가짜이름>` 다음 줄에 `sent ... -> <2순위 기기>` 가 나와야 합니다.
 
-`TARGETS` 전체를 가짜 이름으로 바꾸면 종료 코드가 `2` 가 되고 zip 이 `pending` 에 남습니다.
+`TARGETS` 전체를 가짜 이름으로 바꾸면 종료 코드가 `2` 가 되고 압축 파일이 `pending` 에 남습니다.
 
 ```cmd
 dir C:\TempBackup\pending
@@ -183,17 +190,15 @@ schtasks /create /tn "TailscaleProjectBackup" /xml "C:\Scripts\ts_backup_task.xm
 
 ### 실패했다면 (fallback)
 
-XML 스키마 오류나 권한 오류가 나면, 트리거를 3개 작업으로 쪼개 등록합니다.
-`StartWhenAvailable`(놓친 실행 보충)과 `IgnoreNew`(중복 실행 방지)를 잃지만 동작은 합니다.
+XML 스키마 오류나 권한 오류가 나면 명령줄로 등록합니다.
 
 ```cmd
-schtasks /create /tn "TSBackup_Hourly" /tr "wscript.exe C:\Scripts\ts_backup_hidden.vbs" /sc HOURLY /mo 1 /f
-schtasks /create /tn "TSBackup_Logon"  /tr "wscript.exe C:\Scripts\ts_backup_hidden.vbs" /sc ONLOGON /f
-schtasks /create /tn "TSBackup_Resume" /tr "wscript.exe C:\Scripts\ts_backup_hidden.vbs" /sc ONEVENT /ec System /mo "*[System[Provider[@Name='Microsoft-Windows-Power-Troubleshooter'] and EventID=1]]" /f
+schtasks /create /tn "TailscaleProjectBackup" /tr "wscript.exe C:\Scripts\ts_backup_hidden.vbs" /sc DAILY /st 04:00 /f
 ```
 
-`/sc ONSTART` 는 쓰지 않습니다. 비관리자 세션에서 접근 거부가 나기 쉽고,
-사용자 컨텍스트 작업은 어차피 로그온 전에는 실행되지 않기 때문에 `ONLOGON` 이 실질적으로 동일합니다.
+이 경우 `StartWhenAvailable`(놓친 실행 보충)과 `IgnoreNew`(중복 실행 방지)를 잃습니다.
+PC 가 04:00 에 꺼져 있으면 그날 백업은 그냥 건너뛰게 되므로, XML 등록이 실패한 원인을
+찾아 고치는 편이 낫습니다.
 
 ---
 
@@ -206,7 +211,9 @@ schtasks /create /tn "TSBackup_Resume" /tr "wscript.exe C:\Scripts\ts_backup_hid
 powershell -NoProfile -Command "(Get-ScheduledTask -TaskName 'TailscaleProjectBackup').Triggers | Format-List"
 ```
 
-`TimeTrigger`(Repetition PT1H), `LogonTrigger`, `EventTrigger` 세 개가 나와야 합니다.
+`CalendarTrigger` 하나가 `StartBoundary` 04:00 · `DaysInterval` 1 로 나와야 합니다.
+보내는 쪽에는 부팅·절전 해제 트리거가 일부러 없습니다 — 한 회차가 무겁기 때문이며,
+그 역할은 `StartWhenAvailable` 이 대신합니다.
 
 ```cmd
 schtasks /run /tn "TailscaleProjectBackup"
@@ -220,7 +227,8 @@ type C:\TempBackup\backup.log
 
 - `Last Result` 가 `0` (`1` = 압축 실패, `2` = 전송 실패로 pending 보관)
 - **본체 모니터에 CMD 창이 뜨지 않아야 합니다** (VBS 래퍼가 하는 일)
-- 절전 트리거는 실제로 절전 → 복귀시킨 뒤 로그에 실행 기록이 남는지로 확인합니다
+- 6 GB 규모면 한 회차가 20분 안팎이므로 `timeout /t 90` 뒤에는 아직 실행 중일 수 있습니다.
+  `LastTaskResult` 가 `267009` 면 진행 중이라는 뜻이니 로그를 보며 기다리십시오
 
 ---
 
@@ -229,6 +237,5 @@ type C:\TempBackup\backup.log
 ```cmd
 schtasks /delete /tn "TailscaleProjectBackup" /f
 rd /s /q C:\TempBackup
-del C:\Users\DiCiA\backup_state.txt
 rd /s /q C:\Scripts
 ```

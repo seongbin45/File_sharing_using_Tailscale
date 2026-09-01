@@ -13,26 +13,27 @@ type C:\TempBackup\backup.log
 
 ## 실행은 되는데 결과가 이상함
 
-### 매번 같은 폴더만 백업됨
+### 여유 공간 부족으로 시작조차 하지 않음
 
-상태 파일 값이 실제 폴더명과 일치하지 않는 것입니다. 값 뒤에 공백이 붙었는지 확인하십시오.
+로그에 `FATAL: need at least <N> MB free, refusing to start` 가 찍힙니다.
+의도된 동작입니다 — 디스크를 채운 채 반쯤 만들어진 압축을 남기는 것보다 건너뛰는 편이
+낫습니다. `WORK_DIR` 볼륨을 비우거나, 대상 크기에 맞게 `MIN_FREE_MB` 를 조정하십시오.
 
-```cmd
-for /f "delims=" %A in (C:\Users\DiCiA\backup_state.txt) do @echo [%A]
-```
+압축 하나가 통째로 올라갈 공간이 필요합니다.
 
-`[A1-1_Project]` 처럼 대괄호가 딱 붙어야 정상입니다. `[A1-1_Project ]` 라면 상태 파일을
-`echo %VAR% > file` 형태로 기록한 코드가 어딘가 남아 있는 것입니다. 리디렉션을 앞에 두어야
-합니다 (`>"%STATE_FILE%" echo !TARGET_FOLDER!`).
+### 한 회차가 너무 오래 걸림
 
-로그의 `target folder: X (previous: Y)` 에서 `previous` 가 항상 비어 있다면 상태 파일을
-읽지 못하는 것이니 `STATE_FILE` 경로와 쓰기 권한을 확인하십시오.
+대상 전체를 압축·전송하므로 규모에 비례합니다. 관측 기준으로 압축은 약 44 MB/s,
+Taildrop 전송은 약 7 MB/s 입니다(6 GB 기준 압축 2.4분 + 전송 15분).
 
-### 특정 폴더가 백업 대상에서 빠짐
+줄이려면 셋 중 하나입니다.
 
-- **이름이 점으로 시작** — 의도된 동작입니다. 최상위 점 폴더(`.idea` 등)는 건너뜁니다
-- **폴더가 아니라 파일** — `BASE_DIR` 바로 아래의 낱개 파일은 순환 대상이 아닙니다.
-  `dir /a-d "%BASE_DIR%"` 로 확인하십시오
+- `ts_backup_task.xml` 의 `<DaysInterval>` 을 늘려 빈도를 낮춤
+- `SEVENZIP_LEVEL` 을 `1` 로 낮춤 — 실측 기준 `-mx=5` 보다 3배 이상 빠르고 zip 보다는 여전히 작음
+- `EXCLUDE_LIST` 로 재생성 가능한 폴더를 제외 (`venv`, `node_modules`, `__pycache__`)
+- 대상에서 대용량 산출물을 애초에 다른 곳으로 옮김
+
+`.git` 과 `.env` 는 제외하지 마십시오. 백업의 목적 자체가 사라집니다.
 
 ### 로그에 `sent ... -> 기기명` 줄이 없는데 전송은 성공함
 
@@ -182,3 +183,77 @@ findstr /c:"set \"TARGETS=" C:\Scripts\ts_backup.bat
 
 `goto` 나 괄호 블록 파싱이 틀어질 수 있습니다. 저장소의 `.gitattributes` 가 체크아웃 시
 CRLF 를 강제하므로, git 을 거치지 않고 파일을 만들 때만 주의하면 됩니다.
+
+---
+
+## 7-Zip 관련
+
+### `FATAL: 7-Zip not found at ...`
+
+`SEVENZIP`(보내는 쪽) 또는 `$SevenZip`(받는 쪽) 경로에 `7z.exe` 가 없습니다.
+
+```cmd
+dir "C:\Program Files\7-Zip\7z.exe"
+```
+
+없으면 https://www.7-zip.org 에서 설치하고, 경로가 다르면 설정값을 고치십시오.
+
+### `where 7z` 가 아무것도 못 찾음
+
+**정상입니다.** 7-Zip 설치본은 자기를 PATH 에 등록하지 않습니다. 그래서 스크립트가
+전체 경로로 직접 호출합니다. 작업 스케줄러는 맨 환경에서 돌기 때문에, 어떤 셸에서
+`7z` 가 실행되더라도(예: conda 환경) 그것에 기대면 안 됩니다.
+
+PowerShell 에서는 `where` 가 `Where-Object` 의 별칭이라 아예 다른 명령이 실행됩니다.
+`where.exe 7z` 또는 `Get-Command 7z` 를 쓰십시오.
+
+### 제외 목록이 무시됨
+
+7-Zip 자체의 `-xr!이름` 스위치를 배치에 직접 적으면 **지연 확장이 `!` 를 먹어** 제외가
+조용히 사라집니다. 그래서 이 스크립트는 목록 파일(`EXCLUDE_LIST`)만 받습니다.
+목록 파일 경로에 공백이 있어도 인식되지 않으니 공백 없는 경로에 두십시오.
+
+로그의 `excluding names listed in ...` 줄로 실제 적용 여부를 확인할 수 있습니다.
+`WARN: EXCLUDE_LIST not found` 가 찍혔다면 경로가 틀린 것입니다.
+
+### 받는 쪽에서 압축을 못 품
+
+Windows 내장 `tar` 도 `Expand-Archive` 도 `.7z` 를 읽지 못합니다. 대체 경로가 없으므로
+받는 PC 에도 7-Zip 이 반드시 설치되어 있어야 합니다.
+
+### 받는 쪽이 `no archives to ingest` 만 찍고 아무것도 안 함
+
+압축 파일은 분명히 도착했는데 스크립트가 못 찾는 경우입니다. **거의 항상 프로필이 다른
+것입니다.** Taildrop 은 대화형으로 로그인한 사용자의 프로필에 저장하는데, SSH 세션이나
+작업 스케줄러는 다른 계정으로 돌 수 있습니다.
+
+로그 앞부분의 두 줄로 바로 확인됩니다.
+
+```
+running as WISENESCO-23031\Emergency (profile C:\Users\Emergency)
+watching C:\Users\WISENESCO\Downloads -> C:\Users\WISENESCO\Downloads\PycharmProjects
+```
+
+`running as` 의 프로필과 `watching` 의 경로가 다른 계정을 가리켜도 **그 자체는 문제가
+아닙니다.** 중요한 것은 `watching` 이 압축 파일이 실제로 떨어지는 곳인지입니다.
+
+```powershell
+Get-ChildItem C:\Users -Directory
+Get-ChildItem 'C:\Users\<확인한사용자>\Downloads' -Filter *.7z
+```
+
+`$WatchDir` 는 이런 이유로 `$env:USERPROFILE` 에서 유도하지 않고 절대 경로로 적게 되어
+있습니다. 실제 위치에 맞게 고치십시오.
+
+다른 계정의 프로필을 읽고 쓰려면 권한이 필요합니다. 확인:
+
+```powershell
+try {
+    New-Item -ItemType File -Path 'C:\Users\<사용자>\Downloads\_writetest.tmp' -Force -ErrorAction Stop | Out-Null
+    Remove-Item 'C:\Users\<사용자>\Downloads\_writetest.tmp' -Force
+    "WRITE = OK"
+} catch { "WRITE = FAIL : $($_.Exception.Message)" }
+```
+
+`FAIL` 이면 경로만 고쳐서는 안 됩니다. 작업을 해당 계정으로 등록하거나, Taildrop 수신
+폴더를 두 계정이 모두 접근 가능한 공용 경로로 옮겨야 합니다.
