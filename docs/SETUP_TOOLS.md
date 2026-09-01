@@ -70,6 +70,10 @@ winget 이 없거나 실패할 때입니다.
 |---|---|---|
 | 파일 다운로드 | `curl -L -o <파일> <URL>` | `curl.exe -L -o <파일> <URL>` 또는 `Invoke-WebRequest` |
 | 명령 위치 찾기 | `where <이름>` | `where.exe <이름>` 또는 `Get-Command` |
+| 파일 복사(덮어쓰기) | `copy /y <원본> <대상>` | `Copy-Item <원본> <대상> -Force` |
+
+cmd 명령의 `/y`, `/s` 같은 스위치는 PowerShell 별칭에 통하지 않습니다. `copy`, `where`,
+`curl`, `ls`, `cat`, `rm` 은 전부 PowerShell 에서 다른 명령의 별칭입니다.
 
 - `Invoke-WebRequest` 는 **PowerShell 전용**입니다. cmd 에서 실행하면
   `'Invoke-WebRequest'은(는) 내부 또는 외부 명령... 아닙니다` 가 납니다.
@@ -238,6 +242,8 @@ PATH 에 의존하지 않는 이유는 두 가지입니다.
 | `'Invoke-WebRequest'은(는) 내부 또는 외부 명령... 아닙니다` | cmd 에서 PowerShell 명령을 실행함 |
 | `curl -L -o` 가 PowerShell 에서 이상하게 동작 | `curl` 이 `Invoke-WebRequest` 별칭. `curl.exe` 로 |
 | `where 7z` 가 아무것도 출력 안 함 | PowerShell 에서 `where` 는 `Where-Object`. `where.exe` 로. 그리고 7-Zip 은 어차피 PATH 에 없음 |
+| `copy /y` 가 `'...' 인수를 허용하는 위치 매개 변수를 찾을 수 없습니다` | PowerShell 에서 `copy` 는 `Copy-Item`. `-Force` 를 쓰거나 cmd 에서 실행 |
+| `git pull` 이 Already up to date 인데 파일이 없음 | clone 이 다른 브랜치에 있음. `git -C <경로> branch --show-current` 로 확인하고 `checkout main` |
 | `파일 또는 디렉터리가 손상되었기 때문에 읽을 수 없습니다` | 웹페이지 HTML 을 `.exe` 로 저장함. URL 이 잘못됨 |
 | 다시 받아도 같은 오류 반복 | 손상된 파일이 남아 있음. 먼저 지울 것 |
 | 설치가 멈추거나 조용히 실패 | `Program Files` 쓰기에 관리자 권한 필요. UAC 가 물리 화면에 떠 있음 |
