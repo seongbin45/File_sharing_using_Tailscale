@@ -220,3 +220,40 @@ PowerShell 에서는 `where` 가 `Where-Object` 의 별칭이라 아예 다른 �
 
 Windows 내장 `tar` 도 `Expand-Archive` 도 `.7z` 를 읽지 못합니다. 대체 경로가 없으므로
 받는 PC 에도 7-Zip 이 반드시 설치되어 있어야 합니다.
+
+### 받는 쪽이 `no archives to ingest` 만 찍고 아무것도 안 함
+
+압축 파일은 분명히 도착했는데 스크립트가 못 찾는 경우입니다. **거의 항상 프로필이 다른
+것입니다.** Taildrop 은 대화형으로 로그인한 사용자의 프로필에 저장하는데, SSH 세션이나
+작업 스케줄러는 다른 계정으로 돌 수 있습니다.
+
+로그 앞부분의 두 줄로 바로 확인됩니다.
+
+```
+running as WISENESCO-23031\Emergency (profile C:\Users\Emergency)
+watching C:\Users\WISENESCO\Downloads -> C:\Users\WISENESCO\Downloads\PycharmProjects
+```
+
+`running as` 의 프로필과 `watching` 의 경로가 다른 계정을 가리켜도 **그 자체는 문제가
+아닙니다.** 중요한 것은 `watching` 이 압축 파일이 실제로 떨어지는 곳인지입니다.
+
+```powershell
+Get-ChildItem C:\Users -Directory
+Get-ChildItem 'C:\Users\<확인한사용자>\Downloads' -Filter *.7z
+```
+
+`$WatchDir` 는 이런 이유로 `$env:USERPROFILE` 에서 유도하지 않고 절대 경로로 적게 되어
+있습니다. 실제 위치에 맞게 고치십시오.
+
+다른 계정의 프로필을 읽고 쓰려면 권한이 필요합니다. 확인:
+
+```powershell
+try {
+    New-Item -ItemType File -Path 'C:\Users\<사용자>\Downloads\_writetest.tmp' -Force -ErrorAction Stop | Out-Null
+    Remove-Item 'C:\Users\<사용자>\Downloads\_writetest.tmp' -Force
+    "WRITE = OK"
+} catch { "WRITE = FAIL : $($_.Exception.Message)" }
+```
+
+`FAIL` 이면 경로만 고쳐서는 안 됩니다. 작업을 해당 계정으로 등록하거나, Taildrop 수신
+폴더를 두 계정이 모두 접근 가능한 공용 경로로 옮겨야 합니다.

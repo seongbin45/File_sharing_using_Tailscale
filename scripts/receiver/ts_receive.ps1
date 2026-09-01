@@ -26,15 +26,25 @@ param()
 # ============================== CONFIG ====================================
 
 # Where Taildrop leaves the archives. Scanned non-recursively.
-$WatchDir = Join-Path $env:USERPROFILE 'Downloads'
+#
+# Write the path out in full. Do NOT derive it from $env:USERPROFILE: Taildrop
+# saves into the profile of the interactively logged-on user, while a script
+# run over SSH or from a scheduled task may be running as a different account
+# entirely. When the two differ, a USERPROFILE-derived path silently points at
+# an empty directory and every run reports "no archives to ingest".
+#
+# Confirm the real location before setting this:
+#     Get-ChildItem C:\Users -Directory
+#     Get-ChildItem C:\Users\<user>\Downloads -Filter *.7z
+$WatchDir = 'C:\Users\WISENESCO\Downloads'
 
 # Git-managed directory holding the unpacked snapshot.
 # The name stays fixed; points in time are marked with git tags.
 $RepoDir = Join-Path $WatchDir 'PycharmProjects'
 
 # Where a generation goes when the repository is reset. Keep it on the same
-# volume as $RepoDir so the move is a rename rather than a 6 GB copy.
-$ArchiveRoot = Join-Path $env:USERPROFILE 'PycharmProjects_Archive'
+# volume as $RepoDir so the move is a rename rather than a multi-gigabyte copy.
+$ArchiveRoot = 'C:\Users\WISENESCO\PycharmProjects_Archive'
 
 # Reset the repository this many days after the last reset.
 $ResetAfterDays = 90
@@ -519,6 +529,12 @@ New-Item -ItemType Directory -Path $WorkDir   -Force | Out-Null
 New-Item -ItemType Directory -Path $StageRoot -Force | Out-Null
 Rotate-Log
 Write-Log '=== run start ==='
+
+# Record who is running and which paths were resolved. A run that watches the
+# wrong directory finishes with "no archives to ingest" and exit 0 - it looks
+# like a healthy idle run. These two lines are what makes that distinguishable.
+Write-Log "running as $env:USERDOMAIN\$env:USERNAME (profile $env:USERPROFILE)"
+Write-Log "watching $WatchDir -> $RepoDir"
 
 try {
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
