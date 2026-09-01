@@ -267,6 +267,23 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\Scripts\ts_console.ps1
 설정값은 화면에 하드코딩돼 있지 않고 `ts_backup.bat` 과 `ts_receive.ps1` 의 `CONFIG` 블록을
 읽어 표시합니다. 실제로 동작 중인 값과 어긋날 수 없습니다.
 
+#### 한 번만 출력하기
+
+키를 읽으려면 진짜 콘솔이 필요합니다. SSH 로 **접속한 뒤 셸에서** 실행하면 대화형으로
+동작하지만, 아래처럼 **명령을 붙여서** 실행하면 표준 입력이 리디렉션되어 키를 읽을 수
+없습니다.
+
+```cmd
+ssh dicia@desktop-nb8bfur "powershell -NoProfile -File C:\Scripts\ts_console.ps1"
+```
+
+이 경우 스크립트가 알아서 감지해 **한 화면만 출력하고 종료**합니다. 로그로 남기거나
+다른 명령에 넘길 때 쓰기 좋습니다. 대화형 세션에서도 강제하려면 `-Once` 를 붙입니다.
+
+```cmd
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\Scripts\ts_console.ps1 -Once
+```
+
 이 파일은 **UTF-8 BOM** 으로 저장돼 있어야 합니다. Windows PowerShell 5.1 은 BOM 이 없는
 `.ps1` 을 시스템 코드페이지로 읽어서 한글 레이블이 전부 깨집니다.
 

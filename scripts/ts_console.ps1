@@ -23,7 +23,12 @@
 [CmdletBinding()]
 param(
     # Seconds between automatic refreshes. Any key interrupts the wait.
-    [int]$RefreshSeconds = 10
+    [int]$RefreshSeconds = 10,
+
+    # Print one frame and exit instead of looping. Set automatically when the
+    # console cannot be read from, so the dashboard still produces something
+    # useful from "ssh host powershell -File ts_console.ps1".
+    [switch]$Once
 )
 
 $ErrorActionPreference = 'Stop'
@@ -37,6 +42,54 @@ $SenderTask    = 'TailscaleProjectBackup'
 $ReceiverTask  = 'TailscaleProjectReceive'
 
 # ==========================================================================
+
+# ------------------------------ native calls -------------------------------
+
+function Invoke-Native {
+    <#
+        Runs an external command and returns @{ Code; Output }.
+
+        $ErrorActionPreference = 'Stop' must not be in effect around the call.
+        Windows PowerShell turns anything a native command writes to stderr
+        into an ErrorRecord once stderr is redirected, and under 'Stop' that
+        becomes a terminating error. git writes ordinary progress to stderr,
+        and schtasks reports every failure there - so without this the
+        dashboard would die precisely when it had something worth showing.
+    #>
+    param([Parameter(Mandatory)][string]$Command, [string[]]$Arguments = @())
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $output = & $Command @Arguments 2>&1
+        return @{ Code = $LASTEXITCODE; Output = @($output | ForEach-Object { "$_" }) }
+    } catch {
+        return @{ Code = -1; Output = @("$($_.Exception.Message)") }
+    } finally {
+        $ErrorActionPreference = $previous
+    }
+}
+
+function Get-GitLines {
+    <# Returns the command's output lines, or an empty array if it failed. #>
+    param([Parameter(Mandatory)][string]$RepoDir, [Parameter(Mandatory)][string[]]$GitArgs)
+    $result = Invoke-Native -Command 'git' -Arguments (@('-C', $RepoDir) + $GitArgs)
+    if ($result.Code -ne 0) { return @() }
+    return $result.Output
+}
+
+# --------------------------- console capability ----------------------------
+# Reading keys needs a real console. Over SSH that depends on how the command
+# was invoked: an interactive shell has one, "ssh host powershell -File ..."
+# has its stdin redirected and every ReadKey throws. Probe once, up front,
+# rather than letting the first keypress take the script down.
+
+$script:CanReadKeys = $false
+try {
+    if (-not [Console]::IsInputRedirected) {
+        $null = [Console]::KeyAvailable
+        $script:CanReadKeys = $true
+    }
+} catch { $script:CanReadKeys = $false }
 
 # ------------------------------ text width --------------------------------
 # Korean, Japanese and Chinese characters occupy two columns in a terminal
@@ -60,7 +113,7 @@ function Get-DisplayWidth {
             ($c -ge 0xFF00 -and $c -le 0xFF60) -or
             ($c -ge 0xFFE0 -and $c -le 0xFFE6)
         )
-        $width += if ($wide) { 2 } else { 1 }
+        if ($wide) { $width += 2 } else { $width += 1 }
     }
     return $width
 }
@@ -114,17 +167,53 @@ function Add-Field {
     Add-Line ('  ' + (Format-Fixed $Label 22) + ' ' + $Value)
 }
 
+function Get-ConsoleHeight {
+    try { [Math]::Max(20, $Host.UI.RawUI.WindowSize.Height) } catch { 40 }
+}
+
 function Show-Buffer {
     # Cursor home plus right-padding rather than Clear-Host: over SSH a full
     # clear every refresh flickers badly.
+    #
+    # Home is the top of the visible window, not (0,0). SetCursorPosition
+    # addresses the screen *buffer*, so once the buffer has scrolled - which it
+    # does the moment a frame is taller than the window - row 0 is somewhere
+    # far above what the operator can see, and the display appears to freeze.
+    #
+    # The frame is also clipped to the window height for the same reason: a
+    # frame that does not fit scrolls the buffer on every refresh, and then no
+    # fixed home position is correct.
     $w = Get-ConsoleWidth
-    try { [Console]::SetCursorPosition(0, 0) } catch { Clear-Host }
-    foreach ($line in $script:Buffer) {
-        Write-Host (Format-Fixed $line $w)
-    }
-    # Erase whatever the previous, longer frame left behind.
-    for ($i = 0; $i -lt 6; $i++) { Write-Host (' ' * $w) }
+    $h = Get-ConsoleHeight
+    $lines = @($script:Buffer)
     $script:Buffer.Clear()
+
+    # One-shot output goes out whole and unpadded: it is being read from a
+    # transcript or piped somewhere, not redrawn in place.
+    if ($script:PlainOutput) {
+        foreach ($line in $lines) { Write-Host $line }
+        return
+    }
+
+    # Leave two rows: one for the trailing blanks, one for the prompt line the
+    # shell writes when the script exits.
+    $max = $h - 2
+    if ($lines.Count -gt $max) {
+        $lines = @($lines[0..($max - 2)]) + @("  ... $($lines.Count - $max + 1) 줄 생략 (창을 키우십시오)")
+    }
+
+    $top = 0
+    try { $top = [Console]::WindowTop } catch { $top = 0 }
+    $homed = $false
+    try { [Console]::SetCursorPosition(0, $top); $homed = $true } catch { Clear-Host }
+
+    foreach ($line in $lines) { Write-Host (Format-Fixed $line $w) }
+
+    # Erase whatever a previous, longer frame left behind.
+    if ($homed) {
+        $blanks = [Math]::Min(6, [Math]::Max(0, $max - $lines.Count))
+        for ($i = 0; $i -lt $blanks; $i++) { Write-Host (' ' * $w) }
+    }
 }
 
 function Format-Bytes {
@@ -221,8 +310,8 @@ function Add-SenderPanel {
     $dryRun   = Get-BatValue $SenderBat 'DRY_RUN'
     if (-not $workDir) { $workDir = 'C:\TempBackup' }
 
-    Add-Field '대상' $baseDir
-    if (Test-Path -LiteralPath $baseDir) {
+    Add-Field '대상' $(if ($baseDir) { $baseDir } else { '(ts_backup.bat 에서 BASE_DIR 을 읽지 못했습니다)' })
+    if ($baseDir -and (Test-Path -LiteralPath $baseDir)) {
         $projects = @(Get-ChildItem -LiteralPath $baseDir -Directory -Force -ErrorAction SilentlyContinue |
                       Where-Object { $_.Name -notlike '.*' })
         Add-Field '프로젝트' "$($projects.Count) 개"
@@ -280,14 +369,14 @@ function Add-ReceiverPanel {
     }
 
     if ($repoDir -and (Test-Path -LiteralPath (Join-Path $repoDir '.git'))) {
-        $tags = @(& git -C $repoDir tag 2>$null)
+        $tags = @(Get-GitLines $repoDir @('tag') | Where-Object { $_.Trim() })
         Add-Field '스냅샷' "$($tags.Count) 개"
         if ($tags.Count) {
             Add-Field '최근 스냅샷' (@($tags | Sort-Object)[-1])
         }
-        $counts = @(& git -C $repoDir count-objects -vH 2>$null)
-        $pack = ($counts | Where-Object { $_ -like 'size-pack:*' }) -replace '^size-pack:\s*', ''
-        if ($pack) { Add-Field '.git 크기' $pack }
+        $counts = Get-GitLines $repoDir @('count-objects', '-vH')
+        $pack = @($counts | Where-Object { $_ -like 'size-pack:*' }) -replace '^size-pack:\s*', ''
+        if ($pack) { Add-Field '.git 크기' ($pack | Select-Object -First 1) }
 
         $stateFile = Join-Path $repoDir '.ts_state.json'
         if (Test-Path -LiteralPath $stateFile) {
@@ -341,8 +430,10 @@ function Show-Pager {
     $w = Get-ConsoleWidth
     foreach ($line in $Lines) { Write-Host (Format-Fixed $line $w) }
     Write-Host
-    Write-Host '아무 키나 누르면 돌아갑니다...' -ForegroundColor DarkGray
-    [void][Console]::ReadKey($true)
+    if ($script:CanReadKeys) {
+        Write-Host '아무 키나 누르면 돌아갑니다...' -ForegroundColor DarkGray
+        try { [void][Console]::ReadKey($true) } catch { }
+    }
     Clear-Host
 }
 
@@ -361,7 +452,8 @@ function Show-Snapshots {
         Show-Pager @('관리 저장소가 아직 없습니다.') '스냅샷'
         return
     }
-    $lines = @(& git -C $RepoDir log --oneline --decorate -30 2>&1)
+    $lines = @(Get-GitLines $RepoDir @('log', '--oneline', '--decorate', '-30'))
+    if (-not $lines.Count) { $lines = @('(아직 커밋이 없습니다)') }
     $lines += ''
     $lines += '복원: git -C "' + $RepoDir + '" checkout <태그>'
     $lines += '복귀: git -C "' + $RepoDir + '" checkout -'
@@ -371,8 +463,8 @@ function Show-Snapshots {
 
 function Invoke-TaskRun {
     param([string]$TaskName)
-    $out = & schtasks /run /tn $TaskName 2>&1
-    Show-Pager (@("작업 실행을 요청했습니다: $TaskName", '') + @($out) + @(
+    $r = Invoke-Native -Command 'schtasks' -Arguments @('/run', '/tn', $TaskName)
+    Show-Pager (@("작업 실행을 요청했습니다: $TaskName", '') + $r.Output + @(
         '', '한 회차는 규모에 따라 십수 분에서 수십 분이 걸립니다.',
         '진행 상황은 로그(L)로 확인하십시오.')) '즉시 실행'
 }
@@ -380,8 +472,8 @@ function Invoke-TaskRun {
 function Invoke-TaskToggle {
     param([string]$TaskName, [bool]$CurrentlyEnabled)
     $verb = if ($CurrentlyEnabled) { '/disable' } else { '/enable' }
-    $out = & schtasks /change /tn $TaskName $verb 2>&1
-    Show-Pager (@("$TaskName $(if ($CurrentlyEnabled) { '일시 중지' } else { '재개' })", '') + @($out)) '스케줄 전환'
+    $r = Invoke-Native -Command 'schtasks' -Arguments @('/change', '/tn', $TaskName, $verb)
+    Show-Pager (@("$TaskName $(if ($CurrentlyEnabled) { '일시 중지' } else { '재개' })", '') + $r.Output) '스케줄 전환'
 }
 
 # ------------------------------- main --------------------------------------
@@ -395,7 +487,16 @@ if (-not $hasSender -and -not $hasReceiver) {
     exit 1
 }
 
-Clear-Host
+if (-not $script:CanReadKeys -and -not $Once) {
+    Write-Host '이 세션에서는 키 입력을 읽을 수 없어 한 번만 출력합니다.' -ForegroundColor DarkYellow
+    Write-Host '대화형으로 쓰려면 SSH 로 접속한 뒤 셸에서 직접 실행하십시오:' -ForegroundColor DarkGray
+    Write-Host '    powershell -NoProfile -ExecutionPolicy Bypass -File C:\Scripts\ts_console.ps1' -ForegroundColor DarkGray
+    Write-Host
+    $Once = $true
+}
+
+$script:PlainOutput = [bool]$Once
+if (-not $Once) { Clear-Host }
 $running = $true
 
 while ($running) {
@@ -410,22 +511,33 @@ while ($running) {
     if ($hasReceiver) { Add-ReceiverPanel }
 
     Add-Rule
-    $keys = @('[R] 즉시 실행', '[P] 일시중지/재개', '[L] 로그', '[F] 새로고침')
-    if ($hasReceiver) { $keys += '[S] 스냅샷' }
-    $keys += '[Q] 종료'
-    Add-Line ('  ' + ($keys -join '   '))
-    Add-Line ("  ${RefreshSeconds}초마다 자동 새로고침")
+    if (-not $Once) {
+        $keys = @('[R] 즉시 실행', '[P] 일시중지/재개', '[L] 로그', '[F] 새로고침')
+        if ($hasReceiver) { $keys += '[S] 스냅샷' }
+        $keys += '[Q] 종료'
+        Add-Line ('  ' + ($keys -join '   '))
+        Add-Line ("  ${RefreshSeconds}초마다 자동 새로고침")
+    }
 
     Show-Buffer
+
+    if ($Once) { break }
 
     # Wait for a key, but wake up on the refresh interval so the numbers stay
     # live without the operator having to do anything.
     $deadline = (Get-Date).AddSeconds($RefreshSeconds)
     $key = $null
     while ((Get-Date) -lt $deadline) {
-        if ([Console]::KeyAvailable) { $key = [Console]::ReadKey($true); break }
+        try {
+            if ([Console]::KeyAvailable) { $key = [Console]::ReadKey($true); break }
+        } catch {
+            # The console went away underneath us (the SSH session dropped).
+            $running = $false
+            break
+        }
         Start-Sleep -Milliseconds 150
     }
+    if (-not $running) { break }
     if (-not $key) { continue }
 
     # One machine may host both sides; prefer whichever is present.
@@ -444,22 +556,31 @@ while ($running) {
             else { Show-Pager @("$activeTask 이(가) 등록되어 있지 않습니다.") '스케줄 전환' }
         }
         'L' {
+            # Fall back to the documented defaults rather than letting a
+            # CONFIG block the regex could not read blow up Join-Path.
             $log = if ($hasSender) {
-                Join-Path (Get-BatValue $SenderBat 'WORK_DIR') 'backup.log'
+                $d = Get-BatValue $SenderBat 'WORK_DIR'
+                if (-not $d) { $d = 'C:\TempBackup' }
+                Join-Path $d 'backup.log'
             } else {
-                Join-Path (Get-Ps1Value $ReceiverPs1 'WorkDir') 'receive.log'
+                $d = Get-Ps1Value $ReceiverPs1 'WorkDir'
+                if (-not $d) { $d = 'C:\TempReceive' }
+                Join-Path $d 'receive.log'
             }
             Show-FullLog $log
         }
         'S' {
             if ($hasReceiver) {
                 $watchDir = Get-Ps1Value $ReceiverPs1 'WatchDir'
-                Show-Snapshots (Join-Path $watchDir 'PycharmProjects')
+                if ($watchDir) { Show-Snapshots (Join-Path $watchDir 'PycharmProjects') }
+                else { Show-Pager @('ts_receive.ps1 에서 WatchDir 을 읽지 못했습니다.') '스냅샷' }
             }
         }
         default { }
     }
 }
 
-Clear-Host
-Write-Host '종료했습니다.'
+if (-not $Once) {
+    Clear-Host
+    Write-Host '종료했습니다.'
+}

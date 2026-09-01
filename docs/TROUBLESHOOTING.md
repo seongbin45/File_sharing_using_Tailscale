@@ -257,3 +257,44 @@ try {
 
 `FAIL` 이면 경로만 고쳐서는 안 됩니다. 작업을 해당 계정으로 등록하거나, Taildrop 수신
 폴더를 두 계정이 모두 접근 가능한 공용 경로로 옮겨야 합니다.
+
+---
+
+## 관리 화면 (`ts_console.ps1`)
+
+### 화면이 한 번만 나오고 바로 끝남
+
+키를 읽으려면 진짜 콘솔이 필요합니다. `ssh 호스트 "powershell -File ..."` 처럼 **명령을
+붙여서** 실행하면 표준 입력이 리디렉션되어 키를 읽을 수 없습니다. 스크립트가 이를 감지해
+한 화면만 출력하고 끝냅니다. 화면 맨 위에 그 이유가 찍힙니다.
+
+대화형으로 쓰려면 **먼저 SSH 로 접속한 뒤 셸에서** 실행하십시오.
+
+```cmd
+ssh dicia@desktop-nb8bfur
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\Scripts\ts_console.ps1
+```
+
+### 한글 레이블이 전부 깨짐
+
+`ts_console.ps1` 은 **UTF-8 BOM** 이어야 합니다. Windows PowerShell 5.1 은 BOM 이 없는
+`.ps1` 을 시스템 코드페이지로 읽습니다. 확인:
+
+```powershell
+$b = [System.IO.File]::ReadAllBytes('C:\Scripts\ts_console.ps1')[0..2]
+if ($b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF) { 'BOM OK' } else { 'BOM 없음' }
+```
+
+`BOM 없음` 이면 레포에서 다시 받으십시오. 에디터로 열어 저장하면 BOM 이 날아갈 수 있습니다.
+
+### 값이 `-` 나 `(... 읽지 못했습니다)` 로만 나옴
+
+화면은 값을 하드코딩하지 않고 `ts_backup.bat` / `ts_receive.ps1` 의 `CONFIG` 블록을
+정규식으로 읽습니다. 읽히는 형태는 각각 `set "이름=값"` 과 `$이름 = '값'` 한 줄입니다.
+배포된 스크립트가 낡았거나 그 형식을 벗어나면 값을 못 읽습니다. 같은 폴더에 최신본이
+복사돼 있는지 먼저 확인하십시오.
+
+### 화면이 멈춘 것처럼 보이거나 위쪽이 잘림
+
+창이 너무 좁거나 낮은 경우입니다. 프레임은 창 높이에 맞춰 잘리고, 잘린 줄 수가 마지막
+줄에 표시됩니다. 창을 키우거나 `-Once` 로 한 번에 뽑아 보십시오.
