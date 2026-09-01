@@ -3,8 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Tailscale 백업 관리 콘솔</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%234c8dff'/%3E%3C/svg%3E">
+<title>TS CONTROL</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%230c0c0c'/%3E%3Crect x='3' y='4' width='10' height='2' fill='%2361d6d6'/%3E%3Crect x='3' y='8' width='7' height='2' fill='%2361d6d6'/%3E%3C/svg%3E">
+<!-- Vendored, not from a CDN: this console has to work on a machine with no
+     internet route of its own, and a dead CDN must not take the terminal
+     with it. webadmin/vendor.md records where these came from. -->
 <link rel="stylesheet" href="/static/vendor/xterm.css">
 <link rel="stylesheet" href="/static/style.css">
 </head>
@@ -12,98 +15,216 @@
 
 <header class="topbar">
   <div class="brand">
-    <span class="dot-brand"></span>
-    <h1>Tailscale 백업 관리 콘솔</h1>
+    <h1>TS CONTROL</h1>
+    <span class="sep">|</span>
+    <span class="brand-sub" id="server-info">FastAPI · uvicorn</span>
   </div>
   <div class="topbar-right">
-    <span id="backend-badge" class="badge badge-muted">확인 중</span>
-    <label class="auto">
-      <input type="checkbox" id="auto-refresh" checked>
-      <span>자동 새로고침</span>
-    </label>
-    <button id="refresh" class="btn btn-ghost" title="새로고침">↻</button>
+    <span class="tailnet" id="tailnet"><span class="dot"></span><span id="tailnet-text">확인 중</span></span>
+    <span class="sep">|</span>
+    <label class="auto"><input type="checkbox" id="auto-refresh" checked><span>10초마다 자동 새로고침</span></label>
+    <button class="btn btn-sm" id="refresh">[F] 새로고침</button>
   </div>
 </header>
 
 <div id="notice" class="notice" hidden></div>
 
 <main class="layout">
+
   <nav class="sidebar">
-    <div class="sidebar-title">호스트</div>
-    <ul id="host-list" class="host-list"></ul>
-    <div class="sidebar-foot" id="hosts-file"></div>
+    <div class="sidebar-title">기기 (tailscale status)</div>
+    <ul class="device-list" id="device-list"></ul>
+    <div class="sidebar-foot">
+      <button class="add-server" id="add-server">+ SSH 서버 등록</button>
+      <div class="hosts-file" id="hosts-file"></div>
+    </div>
   </nav>
 
   <section class="content">
-    <div class="tabs" role="tablist">
-      <button class="tab is-active" data-tab="dashboard" role="tab">대시보드</button>
-      <button class="tab" data-tab="terminal" role="tab">터미널</button>
-      <button class="tab" data-tab="log" role="tab">로그</button>
+    <div class="tabbar">
+      <div class="tabs">
+        <button class="tab is-active" data-tab="overview">개요</button>
+        <button class="tab" data-tab="terminal">터미널</button>
+        <button class="tab" data-tab="settings">연결 설정</button>
+      </div>
+      <div class="tabbar-right">
+        <span id="sel-host">-</span>
+        <span class="sep">|</span>
+        <span id="sel-ip">-</span>
+      </div>
     </div>
 
-    <!-- 대시보드 -->
-    <div class="pane is-active" data-pane="dashboard">
-      <div id="dash-empty" class="empty">왼쪽에서 호스트를 고르십시오.</div>
-      <div id="dash" hidden>
+    <!-- ------------------------------------------------------- 개요 -->
+    <div class="pane is-active" data-pane="overview">
+      <div class="pane-scroll">
         <div class="actions">
           <button class="btn" data-action="run">즉시 실행</button>
-          <button class="btn btn-ghost" data-action="toggle">일시중지 / 재개</button>
-          <span id="action-out" class="action-out"></span>
+          <button class="btn btn-warn" data-action="toggle">일시 중지</button>
+          <button class="btn" id="open-terminal">터미널 열기</button>
+          <span class="spacer"></span>
+          <span class="note" id="action-note"></span>
         </div>
-        <div id="cards" class="cards"></div>
-        <section class="card card-wide">
-          <h2>최근 로그</h2>
-          <pre id="dash-log" class="log"></pre>
-        </section>
+
+        <div class="grid2" id="overview-panels"></div>
+
+        <div class="panel" id="log-panel" style="margin-top: 22px;">
+          <div class="panel-head">
+            <span class="panel-title" id="log-title">최근 로그</span>
+            <span class="panel-note" id="log-note"></span>
+          </div>
+          <pre class="logbox" id="overview-log"></pre>
+        </div>
       </div>
     </div>
 
-    <!-- 터미널 -->
+    <!-- ----------------------------------------------------- 터미널 -->
     <div class="pane" data-pane="terminal">
       <div class="term-bar">
-        <span id="term-state" class="badge badge-muted">연결 안 됨</span>
-        <button id="term-connect" class="btn">연결</button>
-        <button id="term-disconnect" class="btn btn-ghost" disabled>끊기</button>
-        <span class="term-hint">각 PC 의 셸에 그대로 붙습니다. 입력은 전부 전달됩니다.</span>
+        <span class="term-state" id="term-state"><span class="dot"></span><span id="term-state-text">연결 안 됨</span></span>
+        <span class="sep">|</span>
+        <span class="term-meta" id="term-target">-</span>
+        <span class="sep">|</span>
+        <span class="term-meta">경로 <b id="term-path">-</b></span>
+        <span class="sep">|</span>
+        <span class="term-meta" id="term-ws">-</span>
+        <span class="spacer"></span>
+        <button class="btn btn-sm" id="term-connect">연결</button>
+        <button class="btn btn-sm" id="term-disconnect" disabled>끊기</button>
+        <button class="link-btn" id="term-clear">화면 지우기</button>
       </div>
-      <div id="terminal" class="terminal"></div>
+
+      <div class="term-wrap"><div id="terminal" style="height:100%"></div></div>
+
+      <div class="quickbar">
+        <span class="quick-label">빠른 명령</span>
+        <div class="quick" id="quick"></div>
+      </div>
     </div>
 
-    <!-- 로그 -->
-    <div class="pane" data-pane="log">
-      <div class="log-bar">
-        <label>줄 수
-          <select id="log-lines">
-            <option>40</option><option>100</option><option>200</option><option>500</option>
-          </select>
-        </label>
-        <button id="log-reload" class="btn btn-ghost">다시 읽기</button>
+    <!-- ------------------------------------------------- 연결 설정 -->
+    <div class="pane" data-pane="settings">
+      <div class="pane-scroll">
+        <div class="settings">
+
+          <div class="panel settings-main">
+            <div class="panel-head">
+              <span class="panel-title">SSH 접속 정보 — <span id="form-target">신규</span></span>
+              <span class="panel-note" id="form-note"></span>
+            </div>
+            <form class="form" id="conn-form" autocomplete="off">
+              <div class="field-group">
+                <label for="f-address">호스트 이름 (tailscale 기기명) 또는 IP</label>
+                <input type="text" id="f-address" placeholder="desktop-nb8bfur 또는 100.101.7.4" required>
+              </div>
+
+              <div class="row">
+                <div class="field-group grow2">
+                  <label for="f-user">사용자 이름</label>
+                  <input type="text" id="f-user" placeholder="dicia" required>
+                </div>
+                <div class="field-group">
+                  <label for="f-port">포트</label>
+                  <input type="number" id="f-port" value="22" min="1" max="65535">
+                </div>
+              </div>
+
+              <div class="row">
+                <div class="field-group">
+                  <label for="f-pass">비밀번호</label>
+                  <input type="password" id="f-pass" placeholder="비워 두면 기존 값 유지">
+                </div>
+                <div class="field-group">
+                  <label for="f-role">역할</label>
+                  <select id="f-role">
+                    <option value="">없음 (터미널만)</option>
+                    <option value="sender">보내는 쪽</option>
+                    <option value="receiver">받는 쪽</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="row">
+                <div class="field-group">
+                  <label for="f-task">작업 스케줄러 이름</label>
+                  <input type="text" id="f-task" placeholder="TailscaleProjectBackup">
+                </div>
+                <div class="field-group">
+                  <label for="f-scripts">스크립트 폴더</label>
+                  <input type="text" id="f-scripts" placeholder="C:\Scripts">
+                </div>
+              </div>
+
+              <div class="field-group">
+                <label>연결 경로</label>
+                <div class="paths" id="paths"></div>
+              </div>
+
+              <div id="jump-fields" hidden>
+                <div class="row" style="margin-bottom: 12px;">
+                  <div class="field-group grow2">
+                    <label for="j-address">점프 호스트 주소</label>
+                    <input type="text" id="j-address" placeholder="reachable-host">
+                  </div>
+                  <div class="field-group">
+                    <label for="j-port">포트</label>
+                    <input type="number" id="j-port" value="22" min="1" max="65535">
+                  </div>
+                </div>
+                <div class="row">
+                  <div class="field-group">
+                    <label for="j-user">점프 사용자</label>
+                    <input type="text" id="j-user">
+                  </div>
+                  <div class="field-group">
+                    <label for="j-pass">점프 비밀번호</label>
+                    <input type="password" id="j-pass">
+                  </div>
+                </div>
+              </div>
+
+              <div class="actions" style="margin: 0;">
+                <button type="button" class="btn" id="test-conn">연결 테스트</button>
+                <button type="submit" class="btn btn-primary">저장</button>
+                <span class="note" id="save-note"></span>
+              </div>
+            </form>
+          </div>
+
+          <div class="settings-side">
+            <div class="panel">
+              <div class="panel-head"><span class="panel-title">FastAPI 엔드포인트</span></div>
+              <div class="panel-body">
+                <div class="endpoints">
+                  <span class="m-get">GET</span><span>/api/devices</span>
+                  <span class="m-get">GET</span><span>/api/overview</span>
+                  <span class="m-get">GET</span><span>/api/hosts/{id}/status</span>
+                  <span class="m-get">GET</span><span>/api/hosts/{id}/log?lines=40</span>
+                  <span class="m-post">POST</span><span>/api/hosts/{id}/action</span>
+                  <span class="m-post">POST</span><span>/api/servers</span>
+                  <span class="m-post">POST</span><span>/api/servers/{id}/test</span>
+                  <span class="m-ws">WS</span><span>/api/hosts/{id}/terminal</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-head"><span class="panel-title">자격 증명 보관</span></div>
+              <div class="prose">
+                <p style="margin:0 0 10px;">비밀번호는 <strong>이 서버의 메모리에만</strong> 남습니다.
+                <code>hosts.json</code> 에는 기록하지 않으며, 서버를 다시 시작하면 사라집니다.</p>
+                <p style="margin:0;">Windows 자격 증명 관리자(DPAPI)에 넣어 무인 재시작까지 견디게 하는 것은
+                <strong>아직 구현하지 않았습니다.</strong> 지금 저장 버튼은 주소·계정·경로만 파일에 씁니다.</p>
+              </div>
+            </div>
+          </div>
+
+        </div>
       </div>
-      <pre id="full-log" class="log log-full"></pre>
     </div>
+
   </section>
 </main>
 
-<!-- 비밀번호 -->
-<dialog id="cred-dialog" class="cred">
-  <form method="dialog">
-    <h2>SSH 비밀번호</h2>
-    <p id="cred-target" class="cred-target"></p>
-    <input type="password" id="cred-password" autocomplete="off" placeholder="비밀번호">
-    <p class="cred-note">
-      이 서버의 메모리에만 남고 디스크에 저장되지 않습니다.
-      서버를 다시 시작하면 사라집니다.
-    </p>
-    <menu>
-      <button value="cancel" class="btn btn-ghost">취소</button>
-      <button value="ok" class="btn" id="cred-ok">확인</button>
-    </menu>
-  </form>
-</dialog>
-
-<!-- Vendored, not from a CDN: this console has to work on a machine with no
-     internet route of its own, and a dead CDN must not take the terminal
-     with it. webadmin/vendor.md records where these came from. -->
 <script src="/static/vendor/xterm.js"></script>
 <script src="/static/vendor/xterm-addon-fit.js"></script>
 <script src="/static/app.js"></script>

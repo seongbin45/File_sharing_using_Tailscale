@@ -29,7 +29,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app import sshbackend as sb              # noqa: E402
 from app.backends import MockBackend, MockShell  # noqa: E402
-from app.config import Host, Registry          # noqa: E402
+from app import devices as dv                  # noqa: E402
+from app.config import Host, JumpConfig, Registry  # noqa: E402
 
 FAILURES: list[str] = []
 
@@ -53,7 +54,14 @@ def test_config() -> None:
     section("config")
     reg = Registry()
     hosts = {h.id: h for h in reg.all()}
-    check("example registry loads two hosts", len(hosts) == 2, str(list(hosts)))
+    check("example registry loads", len(hosts) >= 2, str(list(hosts)))
+    check("one host per role",
+          reg.by_role("sender") is not None and reg.by_role("receiver") is not None)
+    check("the jump example parses",
+          hosts["offsite"].path == "jump" and hosts["offsite"].jump.address == "reachable-host")
+    check("a role-less host gets no work_dir", hosts["offsite"].work_dir == "",
+          repr(hosts["offsite"].work_dir))
+    check("_ keys are stripped", not any(k.startswith("_") for k in hosts["offsite"].public()))
     check("sender work_dir defaulted", hosts["sender"].work_dir == r"C:\TempBackup")
     check("receiver work_dir defaulted", hosts["receiver"].work_dir == r"C:\TempReceive")
 
@@ -356,6 +364,175 @@ def test_action_shaping() -> None:
 
 # --------------------------------------------------------------------------
 
+
+def test_device_merge() -> None:
+    section("device merge")
+    reg = Registry()
+    hosts = reg.all()
+
+    status = {
+        "Self": {"HostName": "laptop-7gmpubqc", "TailscaleIPs": ["100.72.55.18"], "OS": "windows"},
+        "Peer": {
+            "n1": {"HostName": "desktop-nb8bfur", "TailscaleIPs": ["100.101.7.4"],
+                   "OS": "windows", "Online": True},
+            "n2": {"HostName": "desktop-dvj3pqk", "TailscaleIPs": ["100.115.9.62"],
+                   "OS": "windows", "Online": False},
+        },
+    }
+
+    entries = [dv._peer_entry(status["Self"], is_self=True)]
+    entries += [dv._peer_entry(n) for n in status["Peer"].values()]
+    for e in entries:
+        dv._decorate(e, dv._match(e, hosts))
+
+    by_host = {e["host"]: e for e in entries}
+    check("self is always online", by_host["laptop-7gmpubqc"]["online"] is True)
+    check("self is tagged", any(t["kind"] == "self" for t in by_host["laptop-7gmpubqc"]["tags"]))
+    check("ipv4 is preferred", by_host["desktop-nb8bfur"]["ip"] == "100.101.7.4")
+
+    sender = by_host["desktop-nb8bfur"]
+    check("configured peer matches its host", sender["configured"] and sender["id"] == "sender",
+          str(sender.get("id")))
+    check("role becomes a tag", any(t["kind"] == "sender" for t in sender["tags"]))
+    check("configured peer gets an SSH tag", any(t["kind"] == "ssh" for t in sender["tags"]))
+
+    stranger = by_host["desktop-dvj3pqk"]
+    check("unconfigured peer stays unconfigured", stranger["configured"] is False)
+    check("unconfigured peer has no tags", stranger["tags"] == [], str(stranger["tags"]))
+    check("offline is preserved", stranger["online"] is False)
+
+    # matching by address as well as by hostname
+    h = Host(id="x", label="x", role="", address="100.115.9.62", username="u")
+    check("a host addressed by IP still matches",
+          dv._match({"host": "desktop-dvj3pqk", "ip": "100.115.9.62"}, [h]) is h)
+
+
+def test_devices_without_tailscale() -> None:
+    section("devices without tailscale")
+    real = dv._tailscale_binary
+    dv._tailscale_binary = lambda: None      # type: ignore[assignment]
+    try:
+        result = asyncio.run(dv.list_devices())
+    finally:
+        dv._tailscale_binary = real          # type: ignore[assignment]
+
+    check("no tailscale is not an error", isinstance(result, dict))
+    check("tailnet_ok is false", result["tailnet_ok"] is False)
+    check("the reason is reported", "tailscale" in (result["error"] or ""), str(result["error"]))
+    check("configured hosts are still listed",
+          result["total"] == len(Registry().all()), str(result["total"]))
+    check("their state is unknown, not offline",
+          all(d["online"] is None for d in result["devices"]),
+          str([d["online"] for d in result["devices"]]))
+    check("they are still marked configured", all(d["configured"] for d in result["devices"]))
+
+
+def test_registry_roundtrip(tmp_name: str = "hosts.selftest.json") -> None:
+    section("registry save / upsert")
+    import app.config as cfg
+
+    original = cfg.HOSTS_FILE
+    cfg.HOSTS_FILE = Path(__file__).resolve().parent.parent / tmp_name
+    try:
+        reg = Registry()
+        reg.set_password("sender", "secret")
+
+        host = reg.upsert({"id": "sender", "address": "100.101.7.4", "username": "dicia",
+                           "port": 22, "path": "direct", "role": "sender"})
+        check("upsert updates in place", host.address == "100.101.7.4")
+        check("upsert keeps a password it was not given", host.password == "secret")
+
+        reg.upsert({"address": "100.9.9.9", "username": "bob", "path": "jump",
+                    "jump": {"address": "gw", "port": 22, "username": "g", "password": "gp"}})
+        new = reg.get("100-9-9-9")
+        check("a new host gets an id from its address", new is not None, str([h.id for h in reg.all()]))
+        check("jump config survives", new and new.jump and new.jump.address == "gw")
+
+        reg.save()
+        check("hosts.json is written", cfg.HOSTS_FILE.exists())
+
+        raw = json.loads(cfg.HOSTS_FILE.read_text(encoding="utf-8"))
+        blob = json.dumps(raw)
+        check("no password reaches the file", "secret" not in blob and "gp" not in blob, blob[:200])
+
+        reloaded = Registry()
+        check("it reloads", len(reloaded.all()) == len(reg.all()), str(len(reloaded.all())))
+        check("path survives the round trip", reloaded.get("100-9-9-9").path == "jump")
+        check("reloaded hosts have no password", all(not h.has_password for h in reloaded.all()))
+    finally:
+        if cfg.HOSTS_FILE.exists():
+            cfg.HOSTS_FILE.unlink()
+        cfg.HOSTS_FILE = original
+
+
+def test_connection_paths() -> None:
+    section("connection paths")
+    backend = sb.SshBackend()
+
+    # tsssh offers no password at all
+    host = Host(id="t", label="t", role="", address="h", username="u", path="tsssh")
+    captured: dict = {}
+
+    class FakeParamikoClient:
+        def load_host_keys(self, p): pass
+        def set_missing_host_key_policy(self, p): pass
+        def connect(self, **kw): captured.update(kw)
+        def save_host_keys(self, p): pass
+
+    real_client = sb.paramiko.SSHClient
+    sb.paramiko.SSHClient = FakeParamikoClient  # type: ignore[misc]
+    try:
+        backend._connect_blocking(host)
+        check("tsssh sends no password", captured.get("password") is None, str(captured.get("password")))
+        check("tsssh never falls back to a key",
+              captured.get("look_for_keys") is False and captured.get("allow_agent") is False)
+
+        captured.clear()
+        direct = Host(id="d", label="d", role="", address="h", username="u",
+                      path="direct", password="pw")
+        backend._connect_blocking(direct)
+        check("direct sends the password", captured.get("password") == "pw")
+
+        # jump with nothing configured must say so, not fail obscurely later
+        jump = Host(id="j", label="j", role="", address="h", username="u",
+                    path="jump", password="pw")
+        try:
+            backend._connect_blocking(jump)
+            check("jump without a gateway is refused", False, "no exception")
+        except sb.SshError as exc:
+            check("jump without a gateway is refused", "점프" in str(exc), str(exc))
+
+        jump.jump = JumpConfig(address="gw", username="g", password=None)
+        try:
+            backend._connect_blocking(jump)
+            check("jump without a gateway password is refused", False, "no exception")
+        except sb.SshError as exc:
+            check("jump without a gateway password is refused", "비밀번호" in str(exc), str(exc))
+    finally:
+        sb.paramiko.SSHClient = real_client  # type: ignore[misc]
+
+    direct_nopw = Host(id="n", label="n", role="", address="h", username="u", path="direct")
+    try:
+        backend._connect_blocking(direct_nopw)
+        check("direct without a password is refused", False, "no exception")
+    except sb.SshError as exc:
+        check("direct without a password is refused", "비밀번호" in str(exc), str(exc))
+
+
+def test_mock_devices() -> None:
+    section("mock devices")
+    result = asyncio.run(MockBackend().devices())
+    keys = set(result)
+    check("mock matches the real shape",
+          keys == {"devices", "tailnet_ok", "error", "online", "total"}, str(sorted(keys)))
+    fields = {"id", "host", "ip", "os", "online", "self", "label",
+              "role", "configured", "path", "has_password", "tags"}
+    check("device rows match the real shape",
+          all(fields <= set(d) for d in result["devices"]))
+    check("it includes unconfigured peers",
+          any(not d["configured"] for d in result["devices"]))
+
+
 if __name__ == "__main__":
     test_config()
     test_mock_backend()
@@ -366,6 +543,11 @@ if __name__ == "__main__":
     test_no_password()
     test_ssh_shell_bridge()
     test_action_shaping()
+    test_device_merge()
+    test_devices_without_tailscale()
+    test_registry_roundtrip()
+    test_connection_paths()
+    test_mock_devices()
 
     print()
     if FAILURES:

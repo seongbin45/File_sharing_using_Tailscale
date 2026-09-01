@@ -33,7 +33,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .backends import Backend, MockBackend
-from .config import Host, registry
+from .config import PATHS, Host, registry
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -71,6 +71,33 @@ async def meta() -> dict[str, Any]:
 @app.get("/api/hosts")
 async def list_hosts() -> list[dict[str, Any]]:
     return [h.public() for h in registry.all()]
+
+
+@app.get("/api/devices")
+async def devices() -> dict[str, Any]:
+    """The tailnet, as the machine running this console sees it, merged with
+    the hosts it is configured to drive."""
+    return await backend.devices()
+
+
+@app.get("/api/overview")
+async def overview() -> dict[str, Any]:
+    """Both sides at once. The 개요 tab is about the backup system, not about
+    whichever machine happens to be selected in the sidebar."""
+    out: dict[str, Any] = {}
+    for role in ("sender", "receiver"):
+        host = registry.by_role(role)
+        if host is None:
+            out[role] = None
+            continue
+        try:
+            status = await backend.status(host)
+        except Exception as exc:
+            status = {"id": host.id, "reachable": False,
+                      "error": f"{type(exc).__name__}: {exc}", "task": None, "log": []}
+        status["host"] = host.public()
+        out[role] = status
+    return out
 
 
 @app.get("/api/hosts/{host_id}/status")
@@ -114,6 +141,55 @@ async def host_action(host_id: str, req: ActionRequest) -> JSONResponse:
             {"ok": False, "action": req.action, "output": [f"{type(exc).__name__}: {exc}"]},
             status_code=200,
         )
+
+
+class JumpModel(BaseModel):
+    address: str = ""
+    port: int = 22
+    username: str = ""
+    password: str | None = None
+
+
+class ServerRequest(BaseModel):
+    id: str | None = None
+    label: str | None = None
+    role: str | None = None
+    address: str
+    port: int = 22
+    username: str
+    password: str | None = None
+    task: str | None = None
+    scripts_dir: str | None = None
+    work_dir: str | None = None
+    path: str = "direct"
+    jump: JumpModel | None = None
+
+
+@app.post("/api/servers")
+async def save_server(req: ServerRequest) -> dict[str, Any]:
+    if req.path not in PATHS:
+        raise HTTPException(status_code=400, detail=f"알 수 없는 연결 경로: {req.path}")
+    data = req.model_dump(exclude_none=True)
+    if req.jump is not None:
+        data["jump"] = req.jump.model_dump()
+    host = registry.upsert(data)
+    try:
+        registry.save()
+        saved, note = True, f"hosts.json 에 저장했습니다"
+    except OSError as exc:
+        # A read-only checkout should not lose the settings for this session.
+        saved, note = False, f"메모리에만 적용했습니다 - 파일 저장 실패: {exc}"
+    return {"ok": True, "host": host.public(), "saved_to_disk": saved, "note": note}
+
+
+@app.post("/api/servers/{host_id}/test")
+async def test_server(host_id: str) -> dict[str, Any]:
+    host = _host_or_404(host_id)
+    tester = getattr(backend, "test", None)
+    if tester is None:
+        return {"ok": False,
+                "detail": "MOCK 백엔드에서는 연결을 시험할 수 없습니다. --ssh 로 실행하십시오."}
+    return await tester(host)
 
 
 class CredentialRequest(BaseModel):

@@ -1,18 +1,31 @@
 {
   "_comment": [
-    "Copy this to hosts.json next to it and edit. hosts.json is gitignored.",
+    "Copy this to hosts.json next to it and edit, or just fill in the",
+    "console's 연결 설정 tab and press 저장 - that writes this same file.",
+    "hosts.json is gitignored.",
     "",
     "address: the Tailscale MagicDNS name, or the 100.x.y.z tailnet address.",
     "  Do NOT put a LAN address here. The point of going through Tailscale is",
     "  that the same name works from anywhere, and that nothing is exposed",
     "  outside the tailnet.",
     "",
-    "password: leave null and the console asks for it and keeps it in memory",
-    "  only. Fill it in and it sits in plain text on disk - acceptable only if",
-    "  the file itself is protected. It is never sent anywhere but the host.",
+    "password: null means the console asks and keeps it in memory only, which",
+    "  is what the 저장 button does - it never writes a password to this file.",
+    "  Filling it in by hand works and survives a restart, but then it sits",
+    "  here in plain text.",
     "",
-    "role: 'sender' or 'receiver'. Decides which probe commands run and which",
-    "  panel is drawn."
+    "role: 'sender' or 'receiver' decides which probe runs and which panel is",
+    "  drawn on the 개요 tab. Leave it out for a machine you only want a",
+    "  terminal on.",
+    "",
+    "path: how the SSH connection is made.",
+    "  'direct' 100.x:22 with a password. The default, and the only one",
+    "           verified against these machines.",
+    "  'tsssh'  Tailscale SSH - tailscaled authorises by tailnet identity and",
+    "           no password is sent. Needs 'tailscale up --ssh' on the target.",
+    "  'jump'   Reach the target through the SSH host in 'jump' below. This is",
+    "           what 'relay' means in practice: a standard ProxyJump, so the",
+    "           credentials never pass through anyone else's infrastructure."
   ],
 
   "hosts": [
@@ -26,7 +39,8 @@
       "password": null,
       "task": "TailscaleProjectBackup",
       "scripts_dir": "C:\\Scripts",
-      "work_dir": "C:\\TempBackup"
+      "work_dir": "C:\\TempBackup",
+      "path": "direct"
     },
     {
       "id": "receiver",
@@ -38,7 +52,26 @@
       "password": null,
       "task": "TailscaleProjectReceive",
       "scripts_dir": "C:\\Scripts",
-      "work_dir": "C:\\TempReceive"
+      "work_dir": "C:\\TempReceive",
+      "path": "direct"
+    },
+
+    {
+      "_example_only": "A machine the tailnet cannot reach, via a jump host.",
+      "id": "offsite",
+      "label": "원격 PC",
+      "role": "",
+      "address": "192.168.50.20",
+      "port": 22,
+      "username": "user",
+      "password": null,
+      "path": "jump",
+      "jump": {
+        "address": "reachable-host",
+        "port": 22,
+        "username": "gateway-user",
+        "password": null
+      }
     }
   ]
 }

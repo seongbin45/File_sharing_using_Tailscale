@@ -54,6 +54,10 @@ class Backend(abc.ABC):
     @abc.abstractmethod
     async def shell(self, host: Host, cols: int, rows: int) -> Shell: ...
 
+    @abc.abstractmethod
+    async def devices(self) -> dict[str, Any]:
+        """The tailnet device list behind the sidebar."""
+
 
 # --------------------------------------------------------------------------
 # Mock
@@ -241,3 +245,36 @@ class MockBackend(Backend):
 
     async def shell(self, host: Host, cols: int, rows: int) -> Shell:
         return MockShell(host)
+
+    async def devices(self) -> dict[str, Any]:
+        """Shaped exactly like devices.list_devices(), including peers with no
+        entry in hosts.json - the sidebar has to look right for those too."""
+        await asyncio.sleep(0.1)
+        rows = [
+            ("desktop-nb8bfur",    "100.101.7.4",  True,  "sender",   "dicia"),
+            ("wisenesco-23031302", "100.84.12.31", True,  "receiver", "emergency"),
+            ("laptop-7gmpubqc",    "100.72.55.18", True,  None,       ""),
+            ("desktop-dvj3pqk",    "100.115.9.62", False, None,       ""),
+            ("desktop-0g92n63",    "100.66.240.7", False, None,       ""),
+        ]
+        label = {"sender": "보내는 쪽", "receiver": "받는 쪽"}
+        task = {"sender": "TailscaleProjectBackup", "receiver": "TailscaleProjectReceive"}
+        work = {"sender": r"C:\TempBackup", "receiver": r"C:\TempReceive"}
+        devices = []
+        for host, ip, online, role, user in rows:
+            tags = []
+            if role:
+                tags.append({"label": label[role], "kind": role})
+                tags.append({"label": "SSH", "kind": "ssh"})
+            devices.append({
+                "id": role, "host": host, "ip": ip, "os": "windows", "online": online,
+                "self": False, "label": label.get(role, host), "role": role or "",
+                "configured": role is not None, "path": "direct",
+                "has_password": False, "username": user, "port": 22,
+                "task": task.get(role, ""), "scripts_dir": r"C:\Scripts",
+                "work_dir": work.get(role, ""), "tags": tags,
+            })
+        return {
+            "devices": devices, "tailnet_ok": True, "error": None,
+            "online": sum(1 for d in devices if d["online"]), "total": len(devices),
+        }

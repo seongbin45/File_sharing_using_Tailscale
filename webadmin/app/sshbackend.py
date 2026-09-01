@@ -26,6 +26,7 @@ import base64
 import binascii
 import json
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,7 @@ import paramiko
 
 from .backends import Backend, Shell
 from .config import Host
+from .devices import list_devices
 
 CONNECT_TIMEOUT = 12
 PROBE_TIMEOUT = 45
@@ -217,6 +219,16 @@ _LOG_ONLY = _PREAMBLE + r"""
 Emit ([ordered]@{ ok = $true; log = (LogTail '__LOGPATH__' __LOGLINES__) })
 """
 
+_WHOAMI = _PREAMBLE + r"""
+Emit ([ordered]@{
+    ok         = $true
+    whoami     = $env:USERNAME
+    computer   = $env:COMPUTERNAME
+    powershell = $PSVersionTable.PSVersion.ToString()
+    scripts_present = (Test-Path -LiteralPath '__SCRIPTS__')
+})
+"""
+
 _ACTION = _PREAMBLE + r"""
 $out = & schtasks __ARGS__ 2>&1 | ForEach-Object { "$_" }
 Emit ([ordered]@{ ok = ($LASTEXITCODE -eq 0); code = $LASTEXITCODE; output = @($out) })
@@ -289,6 +301,7 @@ class SshBackend(Backend):
 
     def __init__(self) -> None:
         self._clients: dict[str, paramiko.SSHClient] = {}
+        self._gateways: dict[str, paramiko.SSHClient] = {}
         self._locks: dict[str, asyncio.Lock] = {}
 
     # ---------------------------------------------------------- connection
@@ -296,10 +309,41 @@ class SshBackend(Backend):
     def _lock(self, host_id: str) -> asyncio.Lock:
         return self._locks.setdefault(host_id, asyncio.Lock())
 
-    def _connect_blocking(self, host: Host) -> paramiko.SSHClient:
-        if not host.password:
-            raise SshError("비밀번호가 설정되지 않았습니다. 화면에서 입력하십시오.")
+    def _jump_socket(self, host: Host):
+        """Open a channel through the jump host and hand it back as the socket
+        for the real connection.
 
+        This is what "relay" means in practice: an ordinary SSH ProxyJump.
+        No third-party service is involved, so the credentials only ever pass
+        between this console and machines the operator owns - which is the
+        whole reason Tailscale was chosen for the transfer side too.
+        """
+        jump = host.jump
+        if jump is None or not jump.address:
+            raise SshError("점프 호스트가 설정되지 않았습니다.")
+        if not jump.password:
+            raise SshError(f"점프 호스트({jump.address})의 비밀번호가 없습니다.")
+
+        gateway = paramiko.SSHClient()
+        gateway.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        gateway.connect(
+            hostname=jump.address,
+            port=jump.port,
+            username=jump.username,
+            password=jump.password,
+            timeout=CONNECT_TIMEOUT,
+            look_for_keys=False,
+            allow_agent=False,
+        )
+        transport = gateway.get_transport()
+        if transport is None:
+            raise SshError("점프 호스트 연결이 성립되지 않았습니다.")
+        self._gateways[host.id] = gateway   # keep it alive for the session
+        return transport.open_channel(
+            "direct-tcpip", (host.address, host.port), ("127.0.0.1", 0)
+        )
+
+    def _connect_blocking(self, host: Host) -> paramiko.SSHClient:
         client = paramiko.SSHClient()
         # Trust on first use, then pinned - the same thing the ssh command
         # does interactively. The file is ours, not ~/.ssh/known_hosts, so
@@ -307,17 +351,33 @@ class SshBackend(Backend):
         if KNOWN_HOSTS.exists():
             client.load_host_keys(str(KNOWN_HOSTS))
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        client.connect(
-            hostname=host.address,
-            port=host.port,
-            username=host.username,
-            password=host.password,
-            timeout=CONNECT_TIMEOUT,
-            banner_timeout=CONNECT_TIMEOUT,
-            auth_timeout=CONNECT_TIMEOUT,
-            look_for_keys=False,   # password auth only; never silently use a key
-            allow_agent=False,
-        )
+
+        kwargs: dict[str, Any] = {
+            "hostname": host.address,
+            "port": host.port,
+            "username": host.username,
+            "timeout": CONNECT_TIMEOUT,
+            "banner_timeout": CONNECT_TIMEOUT,
+            "auth_timeout": CONNECT_TIMEOUT,
+            "look_for_keys": False,   # password auth only; never silently use a key
+            "allow_agent": False,
+        }
+
+        if host.path == "tsssh":
+            # Tailscale SSH: tailscaled terminates the connection and
+            # authorises by tailnet identity, so there is no password to
+            # offer. paramiko still has to try something, and "none" auth is
+            # what the tailscale client itself ends up doing.
+            kwargs["password"] = None
+        else:
+            if not host.password:
+                raise SshError("비밀번호가 설정되지 않았습니다. 연결 설정에서 입력하십시오.")
+            kwargs["password"] = host.password
+
+        if host.path == "jump":
+            kwargs["sock"] = self._jump_socket(host)
+
+        client.connect(**kwargs)
         try:
             client.save_host_keys(str(KNOWN_HOSTS))
         except OSError:
@@ -331,6 +391,7 @@ class SshBackend(Backend):
             if transport is not None and transport.is_active():
                 return existing
             self._clients.pop(host.id, None)
+            self._drop_gateway(host.id)
 
         client = await asyncio.to_thread(self._connect_blocking, host)
         self._clients[host.id] = client
@@ -363,6 +424,7 @@ class SshBackend(Backend):
                 # A dropped transport looks like this. Drop it and let the
                 # next refresh reconnect rather than staying broken.
                 self._clients.pop(host.id, None)
+                self._drop_gateway(host.id)
                 raise
 
     # -------------------------------------------------------------- public
@@ -430,6 +492,55 @@ class SshBackend(Backend):
             "code": result.get("code"),
             "output": [output] if isinstance(output, str) else output,
         }
+
+    def _drop_gateway(self, host_id: str) -> None:
+        gateway = self._gateways.pop(host_id, None)
+        if gateway is not None:
+            try:
+                gateway.close()
+            except Exception:
+                pass
+
+    async def test(self, host: Host) -> dict[str, Any]:
+        """Connect, ask the far end who it thinks it is, and disconnect.
+
+        Deliberately does not reuse the pooled client: the point is to prove
+        that a *fresh* connection works with the settings just entered, which
+        an already-open session would hide.
+        """
+        started = time.monotonic()
+        self._clients.pop(host.id, None)
+        self._drop_gateway(host.id)
+        try:
+            client = await asyncio.to_thread(self._connect_blocking, host)
+        except Exception as exc:
+            self._drop_gateway(host.id)
+            return {"ok": False, "detail": f"{type(exc).__name__}: {exc}"}
+
+        try:
+            probe = _fill(_WHOAMI, SCRIPTS=host.scripts_dir)
+            info = await asyncio.to_thread(self._run_blocking, client, probe)
+            elapsed = int((time.monotonic() - started) * 1000)
+            return {
+                "ok": True,
+                "elapsed_ms": elapsed,
+                "whoami": info.get("whoami"),
+                "computer": info.get("computer"),
+                "powershell": info.get("powershell"),
+                "scripts_present": info.get("scripts_present"),
+                "detail": f"{info.get('computer')}\\{info.get('whoami')} · {elapsed} ms",
+            }
+        except Exception as exc:
+            return {"ok": False, "detail": f"{type(exc).__name__}: {exc}"}
+        finally:
+            try:
+                client.close()
+            except Exception:
+                pass
+            self._drop_gateway(host.id)
+
+    async def devices(self) -> dict[str, Any]:
+        return await list_devices()
 
     async def shell(self, host: Host, cols: int, rows: int) -> Shell:
         async with self._lock(host.id):
