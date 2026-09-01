@@ -129,6 +129,7 @@ Windows PC 의 프로젝트 루트를 **하루 한 번 통째로** 압축해 다
 | `scripts/ts_backup.bat` | `C:\Scripts\ts_backup.bat` | 압축 · 전송 · 롤백 · 재시도 |
 | `scripts/ts_backup_hidden.vbs` | `C:\Scripts\ts_backup_hidden.vbs` | 창을 숨기고 배치를 실행하는 래퍼 |
 | `scripts/ts_backup_task.xml` | `C:\Scripts\ts_backup_task.xml` | 하루 1회 작업 정의 |
+| `scripts/ts_console.ps1` | `C:\Scripts\ts_console.ps1` | 관리 화면(TUI). 양쪽 PC 공용 |
 
 런타임 경로:
 
@@ -238,6 +239,36 @@ C:\Scripts\src\                  이 저장소의 clone (원본 사본 겸 업�
 ---
 
 ## 운영
+
+### 관리 화면 (TUI)
+
+명령을 하나씩 붙여넣는 대신 한 화면에서 보고 조작할 수 있습니다.
+
+```cmd
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\Scripts\ts_console.ps1
+```
+
+같은 폴더에 `ts_backup.bat` 이 있으면 보내는 쪽, `ts_receive.ps1` 이 있으면 받는 쪽 화면이
+뜹니다. 둘 다 있으면 둘 다 표시합니다. 마지막 실행 결과, 다음 실행 시각, `pending` 유무,
+스냅샷 개수와 저장소 크기, 초기화까지 남은 일수, 최근 로그를 10초마다 갱신합니다.
+
+| 키 | 동작 |
+|---|---|
+| `R` | 즉시 실행 (작업 스케줄러에 요청, 비동기) |
+| `P` | 일시 중지 / 재개 |
+| `L` | 로그 마지막 40줄 |
+| `S` | 스냅샷 목록 (받는 쪽) |
+| `F` | 새로고침 |
+| `Q` | 종료 |
+
+**지우거나 초기화하는 동작은 넣지 않았습니다.** 되돌릴 수 없는 것은 명령을 직접 치는 편이
+낫습니다.
+
+설정값은 화면에 하드코딩돼 있지 않고 `ts_backup.bat` 과 `ts_receive.ps1` 의 `CONFIG` 블록을
+읽어 표시합니다. 실제로 동작 중인 값과 어긋날 수 없습니다.
+
+이 파일은 **UTF-8 BOM** 으로 저장돼 있어야 합니다. Windows PowerShell 5.1 은 BOM 이 없는
+`.ps1` 을 시스템 코드페이지로 읽어서 한글 레이블이 전부 깨집니다.
 
 ### 상태 점검
 

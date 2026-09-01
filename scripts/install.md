@@ -41,7 +41,10 @@ git clone https://github.com/seongbin45/File_sharing_using_Tailscale.git C:\Scri
 copy /y C:\Scripts\src\scripts\ts_backup.bat        C:\Scripts\
 copy /y C:\Scripts\src\scripts\ts_backup_hidden.vbs C:\Scripts\
 copy /y C:\Scripts\src\scripts\ts_backup_task.xml   C:\Scripts\
+copy /y C:\Scripts\src\scripts\ts_console.ps1       C:\Scripts\
 ```
+
+`ts_console.ps1` 은 관리 화면입니다. 설치에 필수는 아니지만 이후 상태 확인이 훨씬 편합니다.
 
 `C:\Scripts\src` 는 원본 사본으로 남겨 둡니다. 설정을 잘못 고쳤을 때 되돌리거나
 (`copy /y C:\Scripts\src\scripts\ts_backup.bat C:\Scripts\`) 업데이트를 받을 때

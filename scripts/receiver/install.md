@@ -44,7 +44,11 @@ git clone https://github.com/seongbin45/File_sharing_using_Tailscale.git C:\Scri
 copy /y C:\Scripts\src\scripts\receiver\ts_receive.ps1         C:\Scripts\
 copy /y C:\Scripts\src\scripts\receiver\ts_receive_hidden.vbs  C:\Scripts\
 copy /y C:\Scripts\src\scripts\receiver\ts_receive_task.xml    C:\Scripts\
+copy /y C:\Scripts\src\scripts\ts_console.ps1                  C:\Scripts\
 ```
+
+`ts_console.ps1` 은 양쪽 PC 공용 관리 화면입니다(`scripts\` 아래, `receiver\` 아래가
+아닙니다). 같은 폴더의 `ts_receive.ps1` 을 보고 받는 쪽 화면을 띄웁니다.
 
 `.ps1` 과 `.vbs` 는 **같은 폴더**에 있어야 합니다. VBS 가 자기 옆의 `.ps1` 을 찾습니다.
 
