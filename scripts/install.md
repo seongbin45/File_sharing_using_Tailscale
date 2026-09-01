@@ -192,6 +192,29 @@ powershell -NoProfile -Command "Select-String -Path 'C:\Scripts\ts_backup_task.x
 schtasks /create /tn "TailscaleProjectBackup" /xml "C:\Scripts\ts_backup_task.xml" /f
 ```
 
+### 이미 등록돼 있다면 — 반드시 다시 등록하십시오
+
+**스크립트를 업데이트했는데 작업은 그대로 두는 것이 이 시스템에서 가장 위험한 실수입니다.**
+트리거는 XML 에 들어 있고 `ts_backup.bat` 을 덮어써도 바뀌지 않습니다. 순환 설계 시절의
+매시간 트리거가 남은 채 전체 스냅샷 로직이 들어가면 **6 GB 압축·전송이 한 시간마다** 돕니다.
+`IgnoreNew` 가 중복 실행만 막을 뿐, 하루 종일 회차가 이어집니다.
+
+먼저 지금 걸린 트리거가 무엇인지 보십시오.
+
+```cmd
+powershell -NoProfile -Command "(Get-ScheduledTask -TaskName 'TailscaleProjectBackup').Triggers | Format-List"
+```
+
+`Repetition` 이 있거나 트리거가 둘 이상이면 낡은 정의입니다. 재등록하는 동안 회차가
+시작되지 않도록 먼저 끄고,
+
+```cmd
+schtasks /change /tn "TailscaleProjectBackup" /disable
+```
+
+5단계부터 다시 하십시오. `/f` 가 기존 정의를 덮어쓰고, 새 XML 의 `<Enabled>true</Enabled>`
+가 위에서 끈 것을 다시 켭니다.
+
 ### 실패했다면 (fallback)
 
 XML 스키마 오류나 권한 오류가 나면 명령줄로 등록합니다.
