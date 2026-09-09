@@ -143,7 +143,8 @@ function renderSelection() {
     : (d ? `${d.host} (미등록)` : '-');
   $('#term-ws').textContent = d && d.id ? `WebSocket /api/hosts/${d.id}/terminal` : 'WebSocket -';
   const path = PATHS.find((p) => p.id === (d ? d.path : 'direct'));
-  $('#term-path').textContent = path ? path.label : '-';
+  $('#term-path').textContent = (path ? path.label : '-')
+    + (d && d.restricted ? '  · 제한된 키' : '');
 }
 
 // ------------------------------------------------------------- overview
@@ -390,6 +391,16 @@ function termState(text, kind) {
 function connectTerminal() {
   const d = state.selected;
   if (!d) return;
+  if (d.restricted) {
+    ensureTerm();
+    state.term.reset();
+    state.term.write(
+      '\r\n\x1b[33m이 호스트는 제한된 키(command="...ts_guard.ps1")로 연결됩니다.\x1b[0m\r\n' +
+      '\x1b[90m셸을 열 수 없는 것이 이 키를 쓰는 이유입니다.\r\n' +
+      '상태 조회·로그·즉시 실행은 그대로 동작합니다.\x1b[0m\r\n');
+    termState('셸 불가 (제한된 키)', 'bad');
+    return;
+  }
   if (!d.id) {
     selectTab('settings');
     $('#save-note').className = 'note bad';

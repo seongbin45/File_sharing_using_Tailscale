@@ -157,26 +157,117 @@ def test_mock_shell() -> None:
     check("exit ends the session", ended)
 
 
-def test_probe_templates() -> None:
-    section("probe templates")
-    filled = {
-        "sender": sb._fill(sb._SENDER_PROBE, SCRIPTS=r"C:\Scripts", WORK=r"C:\TempBackup",
-                           TASK="TailscaleProjectBackup", LOGLINES="12"),
-        "receiver": sb._fill(sb._RECEIVER_PROBE, SCRIPTS=r"C:\Scripts", WORK=r"C:\TempReceive",
-                             TASK="TailscaleProjectReceive", LOGLINES="12"),
-        "log": sb._fill(sb._LOG_ONLY, LOGPATH=r"C:\TempBackup\backup.log", LOGLINES="40"),
-        "action": sb._fill(sb._ACTION, ARGS="/run /tn 'T'"),
-    }
-    for name, script in filled.items():
-        left = re.findall(r"__[A-Z]+__", script)
-        check(f"{name}: no unfilled placeholder", not left, str(left))
-        check(f"{name}: emits base64", "ToBase64String" in script)
-        # 'Stop' would turn git's and schtasks' stderr into terminating errors
-        check(f"{name}: preference is not Stop", "'Stop'" not in script)
+def test_guard_protocol() -> None:
+    section("guard protocol")
+    body = sb.guard_source()
+    check("the guard script is found", len(body) > 2000, str(len(body)))
+    check("no BOM survives into the body", not body.startswith("\ufeff"))
+    check("it emits base64", "ToBase64String" in body)
+    # $ErrorActionPreference = 'Stop' would turn git's and schtasks' ordinary
+    # stderr into terminating errors. (-ErrorAction Stop on a single cmdlet
+    # inside a try/catch is a different thing and is used deliberately.)
+    check("the preference is never Stop",
+          not re.search(r"\$ErrorActionPreference\s*=\s*'Stop'", body))
 
-    original = filled["sender"]
-    decoded = base64.b64decode(sb._encode_command(original)).decode("utf-16-le")
-    check("EncodedCommand round-trips exactly", decoded == original)
+    # The body must be inert when sent inline, or it would run with whatever
+    # SSH_ORIGINAL_COMMAND happened to hold before the appended call.
+    executable = [ln for ln in body.splitlines()
+                  if ln.strip() and not ln.strip().startswith("#")]
+    last = executable[-1].strip()
+    check("the guard only self-runs as a file",
+          last.startswith("if ($PSCommandPath)") and "Invoke-Guard" in last, last)
+
+    inline = sb.inline_script("status")
+    check("inline ends with exactly one call",
+          inline.strip().endswith("Invoke-Guard -Command 'status'"))
+    check("inline adds nothing else after the body",
+          inline.startswith(body) and
+          inline[len(body):].strip() == "Invoke-Guard -Command 'status'",
+          repr(inline[len(body):]))
+    decoded = base64.b64decode(sb._encode_command(inline)).decode("utf-16-le")
+    check("EncodedCommand round-trips exactly", decoded == inline)
+
+    section("verb grammar")
+    ok = ["whoami", "status", "log 1", "log 500", "log 9999",
+          "task run", "task enable", "task disable"]
+    for verb in ok:
+        check(f"accepts {verb!r}", bool(sb.VERB.match(verb)))
+
+    # Every one of these is a way to smuggle something past a naive check.
+    bad = [
+        "", "   ", "shell", "powershell",
+        "status; whoami", "status && whoami", "status | whoami",
+        "log 40; Remove-Item C:\\ -Recurse",
+        "log ../../secret", "log -1", "log 99999",
+        "task run extra", "task delete", "task run; calc",
+        "status\nwhoami", "whoami\r\nstatus",
+        "$(calc)", "`ncalc", "STATUS", "Status",
+    ]
+    for verb in bad:
+        check(f"refuses {verb!r}", not sb.VERB.match(verb))
+
+
+def test_command_selection() -> None:
+    section("what goes over the wire")
+    backend = sb.SshBackend()
+
+    plain = Host(id="p", label="p", role="sender", address="h", username="u")
+    restricted = Host(id="r", label="r", role="sender", address="h", username="u",
+                      restricted=True)
+
+    wire = backend._command_for(restricted, "status")
+    check("a restricted host receives only the verb", wire == "status", wire)
+    check("no PowerShell is sent to a restricted host",
+          "powershell" not in wire.lower() and "EncodedCommand" not in wire, wire)
+
+    wire = backend._command_for(plain, "status")
+    check("an unrestricted host receives the guard inline",
+          wire.startswith("powershell -NoProfile -NonInteractive -EncodedCommand"), wire[:60])
+    sent = base64.b64decode(wire.split()[-1]).decode("utf-16-le")
+    check("and it is the same guard file",
+          "Invoke-Guard" in sent and "ToBase64String" in sent)
+
+    for verb in ("status; calc", "log ../x", "task delete", ""):
+        try:
+            backend._command_for(restricted, verb)
+            check(f"the console refuses to send {verb!r}", False, "it built a command")
+        except sb.SshError:
+            check(f"the console refuses to send {verb!r}", True)
+
+
+def test_restricted_has_no_shell() -> None:
+    section("restricted keys cannot get a shell")
+    backend = sb.SshBackend()
+    host = Host(id="r", label="받는 PC", role="receiver", address="h",
+                username="u", restricted=True)
+    try:
+        asyncio.run(backend.shell(host, 80, 24))
+        check("shell() is refused for a restricted host", False, "it opened one")
+    except sb.SshError as exc:
+        check("shell() is refused for a restricted host", True)
+        check("and the refusal explains why", "제한된 키" in str(exc), str(exc)[:70])
+
+    check("the flag reaches the browser",
+          host.public().get("restricted") is True)
+
+
+def test_guard_denial_surfaces() -> None:
+    section("a guard denial reaches the caller")
+    backend = sb.SshBackend()
+
+    async def run(payload):
+        async def fake(h, verb):
+            # _run raises on denial before returning, so emulate that here
+            if payload.get("denied"):
+                raise sb.SshError(payload.get("reason") or "거부됨")
+            return payload
+        backend._run = fake  # type: ignore[method-assign]
+        return await backend.status(Host(id="x", label="x", role="sender",
+                                         address="h", username="u"))
+
+    got = asyncio.run(run({"denied": True, "reason": "허용되지 않은 명령입니다: shell"}))
+    check("a denial marks the host unreachable", got["reachable"] is False)
+    check("and carries the guard's reason", "허용되지 않은" in got["error"], got["error"])
 
 
 # ------------------------------- fake paramiko ----------------------------
@@ -212,7 +303,8 @@ def test_probe_parsing() -> None:
 
     payload = {"ok": True, "task": {"registered": True}, "log": ["a", "b"]}
     client = FakeClient(stdout=b64json(payload))
-    got = backend._run_blocking(client, "whatever")
+    plain = Host(id="p", label="p", role="sender", address="h", username="u")
+    got = backend._run_blocking(client, backend._command_for(plain, "status"))
     check("base64 JSON is parsed", got == payload, str(got))
     check("command uses -EncodedCommand", "-EncodedCommand" in client.last_command)
     check("command uses -NoProfile", "-NoProfile" in client.last_command)
@@ -357,17 +449,23 @@ def test_action_shaping() -> None:
     host = Registry().get("sender")
 
     async def run(payload):
-        async def fake_run(h, script):
-            fake_run.script = script
+        async def fake_run(h, verb):
+            fake_run.verb = verb
             return payload
         backend._run = fake_run  # type: ignore[method-assign]
         result = await backend.action(host, "run")
-        return result, fake_run.script
+        return result, fake_run.verb
 
-    result, script = asyncio.run(run({"ok": True, "code": 0, "output": "성공"}))
+    result, verb = asyncio.run(run({"ok": True, "code": 0, "output": "성공"}))
     check("scalar output is re-wrapped", result["output"] == ["성공"], str(result["output"]))
-    check("task name reaches the command", "TailscaleProjectBackup" in script)
     check("ok is passed through", result["ok"] is True)
+
+    # The task name deliberately does NOT cross the wire any more: the guard
+    # holds it. A caller that could name the task could start any scheduled
+    # task on that machine.
+    check("only the verb is sent", verb == "task run", verb)
+    check("the task name stays on the far end",
+          "TailscaleProjectBackup" not in verb, verb)
 
     async def bad():
         return await backend.action(host, "rm -rf")
@@ -798,7 +896,10 @@ if __name__ == "__main__":
     test_config()
     test_mock_backend()
     test_mock_shell()
-    test_probe_templates()
+    test_guard_protocol()
+    test_command_selection()
+    test_restricted_has_no_shell()
+    test_guard_denial_surfaces()
     test_probe_parsing()
     test_status_shaping()
     test_no_password()

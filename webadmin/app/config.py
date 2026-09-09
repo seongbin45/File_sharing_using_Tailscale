@@ -122,6 +122,14 @@ class Host:
     # machine itself - which we control, rather than asking anyone.
     key_file: str = ""
 
+    # True when this host's key is pinned with command="...ts_guard.ps1" in
+    # authorized_keys. The console then sends only verbs, and the terminal is
+    # refused - which is the entire point: a stolen console cannot get a shell
+    # on this machine. Set it to match reality on the far end; claiming a
+    # restriction that is not there buys nothing, and claiming none when there
+    # is one just makes every request fail.
+    restricted: bool = False
+
     # Never serialised to the browser. Set either from hosts.json or, more
     # usually, from the connection form - in which case it lives here for as
     # long as the process does and nowhere else.
@@ -146,6 +154,7 @@ class Host:
             "has_password": self.has_password,
             "host_key": self.host_key,
             "has_key_file": bool(self.key_file),
+            "restricted": self.restricted,
             "auth": "key" if self.key_file else ("none" if self.path == "tsssh" else "password"),
             "jump": self.jump.public() if self.jump else None,
         }
@@ -169,6 +178,7 @@ class Host:
             "path": self.path,
             "host_key": self.host_key,
             "key_file": self.key_file,
+            "restricted": self.restricted,
         }
         if self.jump:
             out["jump"] = {

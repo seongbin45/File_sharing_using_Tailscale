@@ -26,6 +26,7 @@ import base64
 import binascii
 import json
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -81,200 +82,63 @@ class SshError(RuntimeError):
 
 
 # --------------------------------------------------------------------------
-# Remote probes
+# The guard, and the verbs it accepts
 # --------------------------------------------------------------------------
+#
+# All remote work goes through scripts/ts_guard.ps1, in one of two ways:
+#
+#   restricted   The key on the far end is pinned with command="...ts_guard.ps1"
+#                so sshd runs it whatever we ask for. We send only the verb.
+#                A stolen console cannot open a shell on that machine.
+#
+#   inline       Nothing is installed there. We send the guard's own body
+#                followed by a call into it, as -EncodedCommand.
+#
+# The point of sending the same file inline is that there is exactly ONE copy
+# of this PowerShell. Keeping a second, subtly different set of probes in this
+# module is how the restricted and unrestricted paths would quietly drift into
+# behaving differently, which is the worst possible outcome for a security
+# boundary.
 
-_PREAMBLE = r"""
-$ErrorActionPreference = 'SilentlyContinue'
-$ProgressPreference = 'SilentlyContinue'
+# Same grammar the guard enforces. Checked here too so a bug in the console
+# cannot even attempt to send something outside it.
+VERB = re.compile(r"^(?:whoami|status|log \d{1,4}|task (?:run|enable|disable))$")
 
-function Emit($obj) {
-    $json = $obj | ConvertTo-Json -Depth 6 -Compress
-    [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))
-}
-
-function TaskInfo($name) {
-    $t = $null; $i = $null
-    try {
-        $t = Get-ScheduledTask -TaskName $name -ErrorAction Stop
-        $i = Get-ScheduledTaskInfo -TaskName $name -ErrorAction Stop
-    } catch { return @{ registered = $false } }
-    return [ordered]@{
-        registered  = $true
-        enabled     = ($t.State -ne 'Disabled')
-        last_run    = $(if ($i.LastRunTime) { '{0:yyyy-MM-dd HH:mm}' -f $i.LastRunTime })
-        last_result = $i.LastTaskResult
-        next_run    = $(if ($i.NextRunTime) { '{0:yyyy-MM-dd HH:mm}' -f $i.NextRunTime })
-        missed      = $i.NumberOfMissedRuns
-    }
-}
-
-function LogTail($path, $count) {
-    if (-not (Test-Path -LiteralPath $path)) { return @() }
-    return @(Get-Content -LiteralPath $path -Tail $count)
-}
-
-function FreeBytes($path) {
-    try { return [int64](Get-Item -LiteralPath $path).PSDrive.Free } catch { return $null }
-}
-"""
-
-_SENDER_PROBE = _PREAMBLE + r"""
-function BatVal($path, $name) {
-    if (-not (Test-Path -LiteralPath $path)) { return $null }
-    $pattern = '^\s*set\s+"' + [regex]::Escape($name) + '=(.*)"\s*$'
-    $m = Select-String -LiteralPath $path -Pattern $pattern | Select-Object -First 1
-    if ($m) { return $m.Matches[0].Groups[1].Value }
-    return $null
-}
-
-$bat  = Join-Path '__SCRIPTS__' 'ts_backup.bat'
-$work = BatVal $bat 'WORK_DIR'
-if (-not $work) { $work = '__WORK__' }
-$base = BatVal $bat 'BASE_DIR'
-
-$projects = $null
-if ($base -and (Test-Path -LiteralPath $base)) {
-    $projects = @(Get-ChildItem -LiteralPath $base -Directory -Force |
-                  Where-Object { $_.Name -notlike '.*' }).Count
-}
-
-$pendingDir = Join-Path $work 'pending'
-$pending = @()
-if (Test-Path -LiteralPath $pendingDir) {
-    $pending = @(Get-ChildItem -LiteralPath $pendingDir -File -Filter '*.7z')
-}
-
-$targets = BatVal $bat 'TARGETS'
-
-Emit ([ordered]@{
-    ok     = $true
-    script_present = (Test-Path -LiteralPath $bat)
-    task   = (TaskInfo '__TASK__')
-    sender = [ordered]@{
-        base_dir      = $base
-        projects      = $projects
-        level         = (BatVal $bat 'SEVENZIP_LEVEL')
-        dry_run       = ((BatVal $bat 'DRY_RUN') -eq '1')
-        targets       = @($(if ($targets) { $targets -split '\s+' } else { @() }))
-        free_bytes    = (FreeBytes $work)
-        pending_count = $pending.Count
-        pending_bytes = [int64](($pending | Measure-Object Length -Sum).Sum)
-    }
-    log = (LogTail (Join-Path $work 'backup.log') __LOGLINES__)
-})
-"""
-
-_RECEIVER_PROBE = _PREAMBLE + r"""
-function Ps1Val($path, $name) {
-    if (-not (Test-Path -LiteralPath $path)) { return $null }
-    $pattern = '^\s*\$' + [regex]::Escape($name) + "\s*=\s*'([^']*)'"
-    $m = Select-String -LiteralPath $path -Pattern $pattern | Select-Object -First 1
-    if ($m) { return $m.Matches[0].Groups[1].Value }
-    return $null
-}
-
-function Ps1Num($path, $name) {
-    if (-not (Test-Path -LiteralPath $path)) { return $null }
-    $pattern = '^\s*\$' + [regex]::Escape($name) + '\s*=\s*(\d+)'
-    $m = Select-String -LiteralPath $path -Pattern $pattern | Select-Object -First 1
-    if ($m) { return [int]$m.Matches[0].Groups[1].Value }
-    return $null
-}
-
-$ps1  = Join-Path '__SCRIPTS__' 'ts_receive.ps1'
-$work = Ps1Val $ps1 'WorkDir'
-if (-not $work) { $work = '__WORK__' }
-
-$watch   = Ps1Val $ps1 'WatchDir'
-$archive = Ps1Val $ps1 'ArchiveRoot'
-$seven   = Ps1Val $ps1 'SevenZip'
-$resetAfter = Ps1Num $ps1 'ResetAfterDays'
-$repo = $(if ($watch) { Join-Path $watch 'PycharmProjects' })
-
-$waiting = @()
-if ($watch -and (Test-Path -LiteralPath $watch)) {
-    $waiting = @(Get-ChildItem -LiteralPath $watch -File -Filter '*.7z')
-}
-
-$tags = @(); $gitSize = $null; $last = $null
-if ($repo -and (Test-Path -LiteralPath (Join-Path $repo '.git'))) {
-    $tags = @(& git -C $repo tag 2>$null | Where-Object { $_.Trim() })
-    if ($tags.Count) { $last = @($tags | Sort-Object)[-1] }
-    $counts = @(& git -C $repo count-objects -vH 2>$null)
-    $line = @($counts | Where-Object { $_ -like 'size-pack:*' })
-    if ($line.Count) { $gitSize = ($line[0] -replace '^size-pack:\s*', '') }
-}
-
-$snapCount = $null; $resetCount = $null; $dueDays = $null; $dueDate = $null
-$stateFile = $(if ($repo) { Join-Path $repo '.ts_state.json' })
-if ($stateFile -and (Test-Path -LiteralPath $stateFile)) {
-    try {
-        $st = Get-Content -LiteralPath $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json
-        $snapCount  = [int]$st.snapshot_count
-        $resetCount = [int]$st.reset_count
-        if ($st.last_reset -and $resetAfter) {
-            $due = ([datetime]$st.last_reset).AddDays($resetAfter)
-            $dueDays = [int][Math]::Ceiling(($due - (Get-Date)).TotalDays)
-            $dueDate = '{0:yyyy-MM-dd}' -f $due
-        }
-    } catch { }
-}
-
-$generations = 0
-if ($archive -and (Test-Path -LiteralPath $archive)) {
-    $generations = @(Get-ChildItem -LiteralPath $archive -Directory).Count
-}
-
-Emit ([ordered]@{
-    ok = $true
-    script_present = (Test-Path -LiteralPath $ps1)
-    task = (TaskInfo '__TASK__')
-    receiver = [ordered]@{
-        watch_dir      = $watch
-        repo_dir       = $repo
-        waiting_count  = $waiting.Count
-        waiting_bytes  = [int64](($waiting | Measure-Object Length -Sum).Sum)
-        snapshots      = $tags.Count
-        last_snapshot  = $last
-        git_size       = $gitSize
-        snapshot_count = $snapCount
-        reset_count    = $resetCount
-        reset_due_days = $dueDays
-        reset_due_date = $dueDate
-        seven_zip      = $(if ($seven) { Test-Path -LiteralPath $seven } else { $false })
-        generations    = $generations
-        free_bytes     = (FreeBytes $work)
-    }
-    log = (LogTail (Join-Path $work 'receive.log') __LOGLINES__)
-})
-"""
-
-_LOG_ONLY = _PREAMBLE + r"""
-Emit ([ordered]@{ ok = $true; log = (LogTail '__LOGPATH__' __LOGLINES__) })
-"""
-
-_WHOAMI = _PREAMBLE + r"""
-Emit ([ordered]@{
-    ok         = $true
-    whoami     = $env:USERNAME
-    computer   = $env:COMPUTERNAME
-    powershell = $PSVersionTable.PSVersion.ToString()
-    scripts_present = (Test-Path -LiteralPath '__SCRIPTS__')
-})
-"""
-
-_ACTION = _PREAMBLE + r"""
-$out = & schtasks __ARGS__ 2>&1 | ForEach-Object { "$_" }
-Emit ([ordered]@{ ok = ($LASTEXITCODE -eq 0); code = $LASTEXITCODE; output = @($out) })
-"""
+_GUARD_NAMES = ("ts_guard.ps1",)
+_GUARD_DIRS = (
+    Path(__file__).resolve().parent,                       # shipped beside the app (Docker)
+    Path(__file__).resolve().parent.parent.parent / "scripts",   # the repo
+)
+_guard_body: str | None = None
 
 
-def _fill(template: str, **values: str) -> str:
-    out = template
-    for key, value in values.items():
-        out = out.replace(f"__{key}__", value)
-    return out
+def guard_source() -> str:
+    """The guard script's text, read once."""
+    global _guard_body
+    if _guard_body is not None:
+        return _guard_body
+    for directory in _GUARD_DIRS:
+        for name in _GUARD_NAMES:
+            candidate = directory / name
+            if candidate.exists():
+                # utf-8-sig: the file carries a BOM so Windows PowerShell
+                # reads its Korean correctly, and the BOM must not survive
+                # into the middle of a script we concatenate.
+                _guard_body = candidate.read_text(encoding="utf-8-sig")
+                return _guard_body
+    raise SshError(
+        "ts_guard.ps1 을 찾지 못했습니다. "
+        f"찾은 위치: {', '.join(str(d) for d in _GUARD_DIRS)}"
+    )
+
+
+def inline_script(verb: str) -> str:
+    """The guard body plus a call into it, for hosts with nothing installed.
+
+    The guard only self-invokes when run as a file ($PSCommandPath is set),
+    so sending the body is inert until this last line calls it.
+    """
+    return f"{guard_source()}\nInvoke-Guard -Command '{verb}'\n"
 
 
 def _encode_command(script: str) -> str:
@@ -463,8 +327,7 @@ class SshBackend(Backend):
 
     # ------------------------------------------------------------- execute
 
-    def _run_blocking(self, client: paramiko.SSHClient, script: str) -> dict[str, Any]:
-        command = f"powershell -NoProfile -NonInteractive -EncodedCommand {_encode_command(script)}"
+    def _run_blocking(self, client: paramiko.SSHClient, command: str) -> dict[str, Any]:
         _, stdout, stderr = client.exec_command(command, timeout=PROBE_TIMEOUT)
         out = stdout.read().strip()
         err = stderr.read()
@@ -479,11 +342,25 @@ class SshBackend(Backend):
             # to stdout, so show it rather than a decoding complaint.
             raise SshError(out.decode("utf-8", "replace")[:400]) from None
 
-    async def _run(self, host: Host, script: str) -> dict[str, Any]:
+    def _command_for(self, host: Host, verb: str) -> str:
+        """What actually goes over the wire for this verb."""
+        if not VERB.match(verb):
+            # Unreachable unless this module has a bug; a security boundary
+            # should still refuse rather than trust its own callers.
+            raise SshError(f"허용되지 않은 동작입니다: {verb!r}")
+        if host.restricted:
+            # sshd replaces this with the forced command from authorized_keys
+            # and hands the text to the guard in SSH_ORIGINAL_COMMAND.
+            return verb
+        return ("powershell -NoProfile -NonInteractive -EncodedCommand "
+                + _encode_command(inline_script(verb)))
+
+    async def _run(self, host: Host, verb: str) -> dict[str, Any]:
+        command = self._command_for(host, verb)
         async with self._lock(host.id):
             client = await self._client(host)
             try:
-                return await asyncio.to_thread(self._run_blocking, client, script)
+                result = await asyncio.to_thread(self._run_blocking, client, command)
             except (paramiko.SSHException, OSError):
                 # A dropped transport looks like this. Drop it and let the
                 # next refresh reconnect rather than staying broken.
@@ -491,19 +368,17 @@ class SshBackend(Backend):
                 self._drop_gateway(host.id)
                 raise
 
+        if result.get("denied"):
+            # The guard refused. Surface its reason rather than a decoding
+            # complaint about the shape of what came back.
+            raise SshError(result.get("reason") or "원격에서 거부했습니다.")
+        return result
+
     # -------------------------------------------------------------- public
 
     async def status(self, host: Host, log_lines: int = 12) -> dict[str, Any]:
-        template = _SENDER_PROBE if host.role == "sender" else _RECEIVER_PROBE
-        script = _fill(
-            template,
-            SCRIPTS=host.scripts_dir,
-            WORK=host.work_dir,
-            TASK=host.task,
-            LOGLINES=str(log_lines),
-        )
         try:
-            result = await self._run(host, script)
+            result = await self._run(host, "status")
         except Exception as exc:
             return {
                 "id": host.id,
@@ -530,10 +405,9 @@ class SshBackend(Backend):
         return result
 
     async def log(self, host: Host, lines: int) -> list[str]:
-        name = "backup.log" if host.role == "sender" else "receive.log"
-        path = f"{host.work_dir}\\{name}"
-        script = _fill(_LOG_ONLY, LOGPATH=path, LOGLINES=str(lines))
-        result = await self._run(host, script)
+        # The guard picks the file from which side it is installed on. The
+        # console never names a path, so there is no path to point elsewhere.
+        result = await self._run(host, f"log {max(1, min(lines, 500))}")
         value = result.get("log") or []
         return [value] if isinstance(value, str) else value
 
@@ -541,14 +415,12 @@ class SshBackend(Backend):
         if not host.task:
             return {"ok": False, "action": action, "output": ["이 호스트에 작업 이름이 없습니다."]}
 
-        if action == "run":
-            args = f"/run /tn '{host.task}'"
-        elif action in ("enable", "disable"):
-            args = f"/change /tn '{host.task}' /{action}"
-        else:
+        if action not in ("run", "enable", "disable"):
             return {"ok": False, "action": action, "output": [f"알 수 없는 동작: {action}"]}
 
-        result = await self._run(host, _fill(_ACTION, ARGS=args))
+        # No task name crosses the wire: the guard holds it. A caller that
+        # could name the task could start any scheduled task on that machine.
+        result = await self._run(host, f"task {action}")
         output = result.get("output") or []
         return {
             "ok": bool(result.get("ok")),
@@ -582,8 +454,9 @@ class SshBackend(Backend):
             return {"ok": False, "detail": f"{type(exc).__name__}: {exc}"}
 
         try:
-            probe = _fill(_WHOAMI, SCRIPTS=host.scripts_dir)
-            info = await asyncio.to_thread(self._run_blocking, client, probe)
+            info = await asyncio.to_thread(
+                self._run_blocking, client, self._command_for(host, "whoami")
+            )
             elapsed = int((time.monotonic() - started) * 1000)
             return {
                 "ok": True,
@@ -607,6 +480,15 @@ class SshBackend(Backend):
         return await list_devices()
 
     async def shell(self, host: Host, cols: int, rows: int) -> Shell:
+        if host.restricted:
+            # sshd would refuse anyway - the forced command runs instead of a
+            # shell, and no-pty blocks the pty - but failing here says why,
+            # instead of leaving a terminal open on a guard denial.
+            raise SshError(
+                f"{host.label} 은(는) 제한된 키로 연결되어 셸을 열 수 없습니다. "
+                "이것이 이 키를 쓰는 이유입니다. 터미널이 필요하면 별도의 "
+                "무제한 키를 등록하십시오 (docs/RESTRICTED_KEY.md)."
+            )
         async with self._lock(host.id):
             client = await self._client(host)
         channel = await asyncio.to_thread(

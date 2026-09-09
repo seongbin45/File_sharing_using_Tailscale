@@ -24,6 +24,13 @@
     "  검증 없이 신뢰하면 응답한 무엇이든 비밀번호를 가져갑니다.",
     "  부트스트랩 중이라면 TSCONSOLE_TOFU=1 로 한 번 받아 지문을 확인하십시오.",
     "",
+    "restricted: 이 호스트의 키가 authorized_keys 에서",
+    "  command=\"...ts_guard.ps1\",no-pty 로 묶여 있으면 true.",
+    "  콘솔은 동사만 보내고, 터미널은 아예 거부됩니다 — 콘솔이 털려도",
+    "  그 기기에서 셸을 못 엽니다. 절차는 docs/RESTRICTED_KEY.md.",
+    "  실제 상태와 맞추십시오. 안 걸고 true 면 얻는 게 없고,",
+    "  걸고 false 면 모든 요청이 실패합니다.",
+    "",
     "key_file: 개인 키 경로. 비밀번호보다 낫습니다 — 재생 공격이 불가능하고,",
     "  회수가 기기의 authorized_keys 에서 한 줄 지우는 것으로 끝납니다.",
     "  누구에게도 요청할 필요 없이 우리가 직접 끊을 수 있습니다.",
@@ -52,7 +59,8 @@
       "work_dir": "C:\\TempBackup",
       "path": "direct",
       "host_key": "",
-      "key_file": ""
+      "key_file": "",
+      "restricted": false
     },
     {
       "id": "receiver",

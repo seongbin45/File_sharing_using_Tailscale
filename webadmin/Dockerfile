@@ -23,13 +23,19 @@ RUN curl -fsSL "https://pkgs.tailscale.com/stable/tailscale_${TAILSCALE_VERSION}
  && mv /tmp/tailscale_${TAILSCALE_VERSION}_amd64/tailscaled /usr/local/sbin/ \
  && rm -rf /tmp/ts.tgz /tmp/tailscale_*
 
+# Build context is the REPOSITORY ROOT, not webadmin/ - see render.yaml.
+# scripts/ts_guard.ps1 has to come along, and it is the single source of the
+# remote logic: sent inline to hosts with nothing installed, and installed as
+# the forced command on the rest. Keeping a second copy under webadmin/ is
+# exactly how the restricted and unrestricted paths would drift apart.
 WORKDIR /app
-COPY requirements.txt .
+COPY webadmin/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app/ ./app/
-COPY hosts.example.json ./
-COPY docker-entrypoint.sh /usr/local/bin/
+COPY webadmin/app/ ./app/
+COPY scripts/ts_guard.ps1 ./app/
+COPY webadmin/hosts.example.json ./
+COPY webadmin/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # tailscaled keeps its node key here. On a platform with no persistent disk

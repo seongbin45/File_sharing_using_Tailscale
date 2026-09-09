@@ -12,7 +12,9 @@ services:
     plan: starter          # free tier sleeps; a sleeping console wakes slowly
     region: singapore      # nearest to KR of Render's regions
     dockerfilePath: ./webadmin/Dockerfile
-    dockerContext: ./webadmin
+    # The repository root, so scripts/ts_guard.ps1 is inside the build
+    # context. It is the single source of what runs on the far end.
+    dockerContext: .
     healthCheckPath: /healthz
 
     # tailscaled's node key. Without it the container re-authenticates on

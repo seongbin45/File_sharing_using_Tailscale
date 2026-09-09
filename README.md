@@ -126,6 +126,7 @@ Windows PC 의 프로젝트 루트를 **하루 한 번 통째로** 압축해 다
 | [docs/RECEIVER.md](docs/RECEIVER.md) | **받는 쪽.** git 관리 구조, 90일 초기화, 복원 방법 |
 | [scripts/receiver/install.md](scripts/receiver/install.md) | 받는 쪽 설치 절차 |
 | [docs/PORTING.md](docs/PORTING.md) | 다른 PC 나 다른 대상 폴더에 옮길 때. 고쳐야 할 값 전수 목록 |
+| [docs/RESTRICTED_KEY.md](docs/RESTRICTED_KEY.md) | **콘솔이 셸을 못 열게 묶기.** `command=` 로 SSH 키 제한 |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | 뭔가 이상할 때. 증상 → 원인 → 조치 |
 | [docs/VERIFICATION.md](docs/VERIFICATION.md) | 무엇이 실기에서 검증됐고 무엇이 아닌지 |
 
@@ -139,6 +140,7 @@ Windows PC 의 프로젝트 루트를 **하루 한 번 통째로** 압축해 다
 | `scripts/ts_backup_hidden.vbs` | `C:\Scripts\ts_backup_hidden.vbs` | 창을 숨기고 배치를 실행하는 래퍼 |
 | `scripts/ts_backup_task.xml` | `C:\Scripts\ts_backup_task.xml` | 하루 1회 작업 정의 |
 | `scripts/ts_console.ps1` | `C:\Scripts\ts_console.ps1` | 관리 화면(TUI). 양쪽 PC 공용 |
+| `scripts/ts_guard.ps1` | `C:\Scripts\ts_guard.ps1` | 제한된 SSH 키가 실행할 수 있는 유일한 것. 양쪽 PC 공용 |
 
 런타임 경로:
 
