@@ -250,7 +250,14 @@ async def audit_tail(request: Request, lines: int = 100) -> dict[str, Any]:
     level = getattr(request.state, "level", access.ADMIN)
     if not access.at_least(level, access.ADMIN):
         raise HTTPException(status_code=403, detail="감사 로그는 관리자만 볼 수 있습니다.")
-    return {"status": audit.status(), "events": audit.tail(max(1, min(lines, 1000)))}
+    # verify() walks the hash chain. It is included here rather than behind a
+    # separate endpoint so that reading the log and checking it has not been
+    # rewritten are the same action - a check nobody runs is not a control.
+    return {
+        "status": audit.status(),
+        "verify": audit.verify(),
+        "events": audit.tail(max(1, min(lines, 1000))),
+    }
 
 
 @app.get("/healthz")

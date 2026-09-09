@@ -175,6 +175,10 @@ python -m tests.accesstest
 ([ACCESS.md](ACCESS.md)). 사람별로 구분되고, 회수는 Tailscale admin 콘솔에서
 기기를 지우는 것으로 끝나며, 감사 로그가 남습니다.
 
+배포 후 밖에서 확인할 것, 제한된 키·호스트 키·감사 로그 점검까지 포함한 전체 목록은
+[VERIFICATION.md 의 검증 절차](../docs/VERIFICATION.md#검증-절차--고친-뒤-무엇을-돌릴-것인가)
+에 한곳으로 모아 뒀습니다.
+
 ---
 
 ## 운영 중 알아 둘 것
