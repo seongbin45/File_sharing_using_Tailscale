@@ -18,6 +18,16 @@
     "  drawn on the 개요 tab. Leave it out for a machine you only want a",
     "  terminal on.",
     "",
+    "host_key: SHA256 지문. 기기에서 직접 확인해 여기 적으십시오.",
+    "  Windows:  ssh-keygen -lf C:\\ProgramData\\ssh\\ssh_host_ed25519_key.pub",
+    "  비워 두면 연결을 거부합니다. 첫 연결이 곧 자격 증명을 건네는 연결이라,",
+    "  검증 없이 신뢰하면 응답한 무엇이든 비밀번호를 가져갑니다.",
+    "  부트스트랩 중이라면 TSCONSOLE_TOFU=1 로 한 번 받아 지문을 확인하십시오.",
+    "",
+    "key_file: 개인 키 경로. 비밀번호보다 낫습니다 — 재생 공격이 불가능하고,",
+    "  회수가 기기의 authorized_keys 에서 한 줄 지우는 것으로 끝납니다.",
+    "  누구에게도 요청할 필요 없이 우리가 직접 끊을 수 있습니다.",
+    "",
     "path: how the SSH connection is made.",
     "  'direct' 100.x:22 with a password. The default, and the only one",
     "           verified against these machines.",
@@ -40,7 +50,9 @@
       "task": "TailscaleProjectBackup",
       "scripts_dir": "C:\\Scripts",
       "work_dir": "C:\\TempBackup",
-      "path": "direct"
+      "path": "direct",
+      "host_key": "",
+      "key_file": ""
     },
     {
       "id": "receiver",

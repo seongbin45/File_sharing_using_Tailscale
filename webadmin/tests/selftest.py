@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app import sshbackend as sb              # noqa: E402
 from app.backends import MockBackend, MockShell  # noqa: E402
 from app import devices as dv                  # noqa: E402
+from app import hostkeys as hk                 # noqa: E402
 from app.config import Host, JumpConfig, Registry  # noqa: E402
 
 FAILURES: list[str] = []
@@ -62,6 +63,17 @@ def test_config() -> None:
     check("a role-less host gets no work_dir", hosts["offsite"].work_dir == "",
           repr(hosts["offsite"].work_dir))
     check("_ keys are stripped", not any(k.startswith("_") for k in hosts["offsite"].public()))
+
+    # public() adds derived fields; upsert() feeds public() back into the
+    # constructor, so every derived key must be listed in DERIVED or saving
+    # crashes. Catch a new one the moment it is added, not when a user saves.
+    import dataclasses
+
+    import app.config as cfg
+    fields = {f.name for f in dataclasses.fields(Host)}
+    extra = set(hosts["sender"].public()) - fields
+    check("every derived field is declared in DERIVED",
+          extra <= set(cfg.DERIVED), f"undeclared: {sorted(extra - set(cfg.DERIVED))}")
     check("sender work_dir defaulted", hosts["sender"].work_dir == r"C:\TempBackup")
     check("receiver work_dir defaulted", hosts["receiver"].work_dir == r"C:\TempReceive")
 
@@ -611,6 +623,163 @@ def test_socks_config() -> None:
         sb.SOCKS5 = real                  # type: ignore[misc]
 
 
+def test_host_key_pinning() -> None:
+    section("host key pinning")
+    import os
+
+    import paramiko
+
+    key = paramiko.RSAKey.generate(2048)
+    other = paramiko.RSAKey.generate(2048)
+    fp = hk.fingerprint(key)
+    check("fingerprint looks like ssh-keygen", fp.startswith("SHA256:") and len(fp) > 20, fp)
+
+    saved = os.environ.get("TSCONSOLE_TOFU")
+    os.environ.pop("TSCONSOLE_TOFU", None)
+    try:
+        # matching pin: accepted
+        policy = hk.Pinned(fp, "test")
+        try:
+            policy.missing_host_key(None, "h", key)
+            check("a matching fingerprint is accepted", True)
+        except hk.HostKeyError as exc:
+            check("a matching fingerprint is accepted", False, str(exc)[:80])
+
+        # people paste it without the prefix, and without padding
+        for variant in (fp[7:], fp + "=", fp.replace("SHA256:", "sha256:")):
+            try:
+                hk.Pinned(variant, "test").missing_host_key(None, "h", key)
+                check(f"accepted as written: {variant[:18]}...", True)
+            except hk.HostKeyError:
+                check(f"accepted as written: {variant[:18]}...", False)
+
+        # wrong key: refused, and the message shows both so it can be checked
+        try:
+            hk.Pinned(fp, "test").missing_host_key(None, "h", other)
+            check("a different key is refused", False, "it was accepted")
+        except hk.HostKeyError as exc:
+            check("a different key is refused", True)
+            check("the refusal shows both fingerprints",
+                  fp in str(exc) and hk.fingerprint(other) in str(exc))
+
+        # no pin and no opt-in: refused. This is the case that used to hand
+        # the password to whatever answered.
+        try:
+            hk.Pinned("", "test").missing_host_key(None, "h", key)
+            check("an unpinned host is refused", False, "it was accepted")
+        except hk.HostKeyError as exc:
+            check("an unpinned host is refused", True)
+            check("the refusal tells you how to get the fingerprint",
+                  "ssh-keygen" in str(exc))
+            check("the refusal shows what it saw", fp in str(exc))
+
+        # explicit bootstrap opt-in
+        os.environ["TSCONSOLE_TOFU"] = "1"
+        try:
+            policy = hk.Pinned("", "test")
+            policy.missing_host_key(None, "h", key)
+            check("TSCONSOLE_TOFU allows the first connection", True)
+            check("and reports what it accepted", policy.seen == fp)
+        except hk.HostKeyError as exc:
+            check("TSCONSOLE_TOFU allows the first connection", False, str(exc)[:80])
+    finally:
+        if saved is None:
+            os.environ.pop("TSCONSOLE_TOFU", None)
+        else:
+            os.environ["TSCONSOLE_TOFU"] = saved
+
+    check("the code no longer contains AutoAddPolicy",
+          "AutoAddPolicy" not in Path("app/sshbackend.py").read_text(encoding="utf-8"))
+
+
+def test_key_auth() -> None:
+    section("key authentication")
+    import os
+    import tempfile
+
+    import paramiko
+
+    key = paramiko.RSAKey.generate(2048)
+    with tempfile.NamedTemporaryFile("w", suffix=".pem", delete=False) as fh:
+        key.write_private_key(fh)
+        path = fh.name
+
+    try:
+        loaded = hk.load_private_key(path, None)
+        check("a private key loads", hk.fingerprint(loaded) == hk.fingerprint(key))
+
+        try:
+            hk.load_private_key(path + ".missing", None)
+            check("a missing key file is reported", False, "no exception")
+        except hk.HostKeyError as exc:
+            check("a missing key file is reported", "개인 키" in str(exc))
+
+        # a key beats a password: nothing replayable is sent
+        backend = sb.SshBackend()
+        captured: dict = {}
+
+        class FakeClient:
+            def load_host_keys(self, p): pass
+            def set_missing_host_key_policy(self, p): pass
+            def connect(self, **kw): captured.update(kw)
+            def save_host_keys(self, p): pass
+
+        real = sb.paramiko.SSHClient
+        sb.paramiko.SSHClient = FakeClient          # type: ignore[misc]
+        try:
+            host = Host(id="k", label="k", role="", address="h", username="u",
+                        password="should-not-be-sent", key_file=path, host_key="x")
+            backend._connect_blocking(host)
+            check("the key is used", captured.get("pkey") is not None)
+            check("no password is sent when a key is configured",
+                  captured.get("password") is None, str(captured.get("password")))
+        finally:
+            sb.paramiko.SSHClient = real            # type: ignore[misc]
+    finally:
+        os.unlink(path)
+
+
+def test_audit_chain() -> None:
+    section("audit chain")
+    import os
+    import tempfile
+
+    from app import audit
+
+    saved_file, saved_head = audit.AUDIT_FILE, audit._head
+    with tempfile.TemporaryDirectory() as tmp:
+        audit.AUDIT_FILE = Path(tmp) / "audit.log"
+        audit._head = None
+        audit._disabled_reason = None
+
+        for i in range(5):
+            audit.record("test", who=f"user{i}", level="admin")
+
+        result = audit.verify()
+        check("an untouched chain verifies", result["ok"] is True, str(result))
+        check("it checked every record", result["checked"] == 5, str(result))
+        check("status reports the head", audit.status()["head"] == result["head"])
+
+        lines = audit.AUDIT_FILE.read_text(encoding="utf-8").splitlines()
+
+        # edit a record in place
+        edited = json.loads(lines[2]); edited["who"] = "someone-else"
+        audit.AUDIT_FILE.write_text(
+            "\n".join(lines[:2] + [json.dumps(edited, ensure_ascii=False)] + lines[3:]) + "\n",
+            encoding="utf-8")
+        result = audit.verify()
+        check("an edited record is caught", result["ok"] is False, str(result))
+        check("and it says which line", result["line"] == 3, str(result))
+
+        # remove one entirely
+        audit.AUDIT_FILE.write_text(
+            "\n".join(lines[:2] + lines[3:]) + "\n", encoding="utf-8")
+        result = audit.verify()
+        check("a deleted record is caught", result["ok"] is False, str(result))
+
+    audit.AUDIT_FILE, audit._head = saved_file, saved_head
+
+
 def test_mock_devices() -> None:
     section("mock devices")
     result = asyncio.run(MockBackend().devices())
@@ -643,6 +812,9 @@ if __name__ == "__main__":
     test_env_config()
     test_deployment_guard()
     test_socks_config()
+    test_host_key_pinning()
+    test_key_auth()
+    test_audit_chain()
 
     print()
     if FAILURES:

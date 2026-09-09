@@ -33,8 +33,9 @@ from typing import Any
 
 import paramiko
 
+from . import hostkeys
 from .backends import Backend, Shell
-from .config import Host
+from .config import Host, keypass_env_name
 from .devices import list_devices
 
 CONNECT_TIMEOUT = 12
@@ -359,7 +360,13 @@ class SshBackend(Backend):
             raise SshError(f"점프 호스트({jump.address})의 비밀번호가 없습니다.")
 
         gateway = paramiko.SSHClient()
-        gateway.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        if KNOWN_HOSTS.exists():
+            gateway.load_host_keys(str(KNOWN_HOSTS))
+        # The jump host sees the target's credentials pass through it, so it
+        # is verified on exactly the same terms as the target.
+        gateway.set_missing_host_key_policy(
+            hostkeys.Pinned(getattr(jump, "host_key", ""), f"점프 호스트 {jump.address}")
+        )
         gateway.connect(
             hostname=jump.address,
             port=jump.port,
@@ -379,12 +386,13 @@ class SshBackend(Backend):
 
     def _connect_blocking(self, host: Host) -> paramiko.SSHClient:
         client = paramiko.SSHClient()
-        # Trust on first use, then pinned - the same thing the ssh command
-        # does interactively. The file is ours, not ~/.ssh/known_hosts, so
-        # this never disturbs the operator's own SSH setup.
+        # known_hosts is a cache, not the authority: on a wiped filesystem it
+        # is empty and every host looks new. host.host_key is the authority,
+        # because it is deployed with the configuration.
         if KNOWN_HOSTS.exists():
             client.load_host_keys(str(KNOWN_HOSTS))
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        policy = hostkeys.Pinned(host.host_key, f"{host.label} ({host.address})")
+        client.set_missing_host_key_policy(policy)
 
         kwargs: dict[str, Any] = {
             "hostname": host.address,
@@ -397,7 +405,16 @@ class SshBackend(Backend):
             "allow_agent": False,
         }
 
-        if host.path == "tsssh":
+        if host.key_file:
+            # A key is not replayable and is revoked by deleting one line
+            # from authorized_keys on the machine itself - no password to
+            # steal from an environment variable, and nothing to ask anyone
+            # else for in order to cut access off.
+            kwargs["pkey"] = hostkeys.load_private_key(
+                host.key_file, os.environ.get(keypass_env_name(host.id))
+            )
+            kwargs["password"] = None
+        elif host.path == "tsssh":
             # Tailscale SSH: tailscaled terminates the connection and
             # authorises by tailnet identity, so there is no password to
             # offer. paramiko still has to try something, and "none" auth is
@@ -413,11 +430,22 @@ class SshBackend(Backend):
         elif SOCKS5:
             kwargs["sock"] = _socks_socket(host.address, host.port)
 
-        client.connect(**kwargs)
+        try:
+            client.connect(**kwargs)
+        except paramiko.BadHostKeyException as exc:
+            # Already known and now different. paramiko raises before the
+            # policy is consulted, so translate it into the same message.
+            raise hostkeys.HostKeyError(
+                f"{host.label} 의 호스트 키가 이전에 본 값과 다릅니다.\n"
+                f"  이전: {hostkeys.fingerprint(exc.expected_key)}\n"
+                f"  지금: {hostkeys.fingerprint(exc.key)}\n"
+                "연결을 중단했습니다."
+            ) from exc
+
         try:
             client.save_host_keys(str(KNOWN_HOSTS))
         except OSError:
-            pass  # read-only checkout: pinning is a bonus, not a requirement
+            pass  # read-only checkout: the cache is a convenience
         return client
 
     async def _client(self, host: Host) -> paramiko.SSHClient:

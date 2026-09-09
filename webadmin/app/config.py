@@ -40,9 +40,26 @@ HOSTS_JSON_ENV = "TSCONSOLE_HOSTS_JSON"
 PASSWORD_ENV_PREFIX = "TSCONSOLE_PASSWORD_"
 
 
+def _env_suffix(host_id: str) -> str:
+    return "".join(c if c.isalnum() else "_" for c in host_id).upper()
+
+
 def password_env_name(host_id: str) -> str:
-    safe = "".join(c if c.isalnum() else "_" for c in host_id).upper()
-    return f"{PASSWORD_ENV_PREFIX}{safe}"
+    return f"{PASSWORD_ENV_PREFIX}{_env_suffix(host_id)}"
+
+
+def hostkey_env_name(host_id: str) -> str:
+    """Expected SSH host fingerprint, e.g. TSCONSOLE_HOSTKEY_SENDER."""
+    return f"TSCONSOLE_HOSTKEY_{_env_suffix(host_id)}"
+
+
+def keyfile_env_name(host_id: str) -> str:
+    """Private key path, e.g. TSCONSOLE_KEYFILE_SENDER."""
+    return f"TSCONSOLE_KEYFILE_{_env_suffix(host_id)}"
+
+
+def keypass_env_name(host_id: str) -> str:
+    return f"TSCONSOLE_KEYPASS_{_env_suffix(host_id)}"
 
 # How the SSH connection is made. The names match the "연결 경로" choice in
 # the console.
@@ -56,12 +73,19 @@ def password_env_name(host_id: str) -> str:
 #           service, so credentials stay between you and machines you own.
 PATHS = ("direct", "tsssh", "jump")
 
+# Keys public() computes for the browser that are not fields on Host. upsert()
+# round-trips through public(), so these have to be dropped on the way back or
+# the constructor rejects them. Listed once, here, because adding a derived
+# field and forgetting this is a bug that only shows up when someone saves.
+DERIVED = ("has_password", "has_key_file", "auth")
+
 
 @dataclass
 class JumpConfig:
     address: str = ""
     port: int = 22
     username: str = ""
+    host_key: str = ""
     password: str | None = field(default=None, repr=False)
 
     def public(self) -> dict[str, Any]:
@@ -69,6 +93,7 @@ class JumpConfig:
             "address": self.address,
             "port": self.port,
             "username": self.username,
+            "host_key": self.host_key,
             "has_password": bool(self.password),
         }
 
@@ -86,6 +111,16 @@ class Host:
     work_dir: str = ""
     path: str = "direct"
     jump: JumpConfig | None = None
+
+    # SHA256 fingerprint of the machine's SSH host key. Configuration, not
+    # cached state: it has to survive a wiped filesystem, because the first
+    # connection after a wipe is the one that hands over the credential.
+    host_key: str = ""
+
+    # Path to a private key. Preferred over a password: nothing replayable
+    # is sent, and revoking it is one line out of authorized_keys on the
+    # machine itself - which we control, rather than asking anyone.
+    key_file: str = ""
 
     # Never serialised to the browser. Set either from hosts.json or, more
     # usually, from the connection form - in which case it lives here for as
@@ -109,6 +144,9 @@ class Host:
             "work_dir": self.work_dir,
             "path": self.path,
             "has_password": self.has_password,
+            "host_key": self.host_key,
+            "has_key_file": bool(self.key_file),
+            "auth": "key" if self.key_file else ("none" if self.path == "tsssh" else "password"),
             "jump": self.jump.public() if self.jump else None,
         }
 
@@ -129,12 +167,15 @@ class Host:
             "scripts_dir": self.scripts_dir,
             "work_dir": self.work_dir,
             "path": self.path,
+            "host_key": self.host_key,
+            "key_file": self.key_file,
         }
         if self.jump:
             out["jump"] = {
                 "address": self.jump.address,
                 "port": self.jump.port,
                 "username": self.jump.username,
+                "host_key": self.jump.host_key,
                 "password": None,
             }
         return out
@@ -183,6 +224,10 @@ class Registry:
         for host in hosts.values():
             if not host.password:
                 host.password = os.environ.get(password_env_name(host.id)) or None
+            if not host.host_key:
+                host.host_key = os.environ.get(hostkey_env_name(host.id), "")
+            if not host.key_file:
+                host.key_file = os.environ.get(keyfile_env_name(host.id), "")
             if host.jump and not host.jump.password:
                 host.jump.password = (
                     os.environ.get(password_env_name(host.id) + "_JUMP") or None
@@ -262,11 +307,13 @@ class Registry:
             merged["id"] = host_id
             merged.setdefault("label", data.get("address", host_id))
             merged.setdefault("role", "")
-            merged.pop("has_password", None)
+            for key in DERIVED:
+                merged.pop(key, None)
 
             jump = merged.get("jump")
             if isinstance(jump, dict):
-                jump.pop("has_password", None)
+                for key in DERIVED:
+                    jump.pop(key, None)
                 if not jump.get("address"):
                     merged["jump"] = None
 
