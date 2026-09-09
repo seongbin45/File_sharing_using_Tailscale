@@ -1,0 +1,53 @@
+# Render blueprint. Import with New → Blueprint, pointing at this repo.
+#
+# Read DEPLOY.md before using this. Deploying this console puts an
+# interactive shell on your home PCs behind a public URL, and hands a
+# tailnet key and your SSH passwords to a third party. That may be an
+# acceptable trade for you - but it should be a decision, not a default.
+
+services:
+  - type: web
+    name: ts-control
+    runtime: docker
+    plan: starter          # free tier sleeps; a sleeping console wakes slowly
+    region: singapore      # nearest to KR of Render's regions
+    dockerfilePath: ./webadmin/Dockerfile
+    dockerContext: ./webadmin
+    healthCheckPath: /healthz
+
+    # tailscaled's node key. Without it the container re-authenticates on
+    # every deploy and leaves a trail of dead nodes in the admin console.
+    disk:
+      name: tailscale-state
+      mountPath: /var/lib/tailscale
+      sizeGB: 1
+
+    envVars:
+      # ---- secrets: set these in the dashboard, never in this file -------
+      - key: TS_AUTHKEY            # tailscale reusable auth key (tskey-auth-...)
+        sync: false
+      - key: TSCONSOLE_PASSWORD    # the console login
+        sync: false
+      - key: TSCONSOLE_SECRET      # cookie signing key; without it, logins drop on redeploy
+        generateValue: true
+      - key: TSCONSOLE_PASSWORD_SENDER    # SSH password for host id "sender"
+        sync: false
+      - key: TSCONSOLE_PASSWORD_RECEIVER  # SSH password for host id "receiver"
+        sync: false
+
+      # ---- host list ------------------------------------------------------
+      # Render's filesystem is wiped on every deploy, so the 연결 설정 tab
+      # cannot persist anything here - the environment is the only durable
+      # place. Passwords go in the variables above, not in this JSON.
+      - key: TSCONSOLE_HOSTS_JSON
+        sync: false
+
+      # ---- fixed ----------------------------------------------------------
+      - key: TSCONSOLE_BACKEND
+        value: ssh
+      - key: TSCONSOLE_BIND
+        value: 0.0.0.0
+      - key: TSCONSOLE_SOCKS5      # userspace tailscaled has no interface
+        value: localhost:1055
+      - key: TS_HOSTNAME
+        value: ts-control

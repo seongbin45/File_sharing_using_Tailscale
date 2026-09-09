@@ -1,0 +1,3 @@
+# Only for tests/authtest.py. The console itself must not need these.
+httpx2
+websockets
