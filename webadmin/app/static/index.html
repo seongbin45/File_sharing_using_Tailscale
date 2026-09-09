@@ -24,6 +24,9 @@
     <span class="sep">|</span>
     <label class="auto"><input type="checkbox" id="auto-refresh" checked><span>10초마다 자동 새로고침</span></label>
     <button class="btn btn-sm" id="refresh">[F] 새로고침</button>
+    <form method="post" action="/logout" id="logout-form" hidden>
+      <button class="btn btn-sm" type="submit">로그아웃</button>
+    </form>
   </div>
 </header>
 
@@ -184,7 +187,7 @@
 
               <div class="actions" style="margin: 0;">
                 <button type="button" class="btn" id="test-conn">연결 테스트</button>
-                <button type="submit" class="btn btn-primary">저장</button>
+                <button type="submit" class="btn btn-primary" id="save-btn">저장</button>
                 <span class="note" id="save-note"></span>
               </div>
             </form>

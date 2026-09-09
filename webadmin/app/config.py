@@ -19,6 +19,31 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 HOSTS_FILE = Path(os.environ.get("TSCONSOLE_HOSTS", BASE_DIR / "hosts.json"))
 EXAMPLE_FILE = BASE_DIR / "hosts.example.json"
 
+# Where the host list comes from, in order:
+#
+#   1. TSCONSOLE_HOSTS_JSON   the whole config as one JSON value
+#   2. hosts.json             the file, written by the 연결 설정 tab
+#   3. hosts.example.json     the shipped sample, so a fresh checkout runs
+#
+# (1) exists for deployments with no persistent disk. On a PaaS the filesystem
+# is wiped on every redeploy, so a hosts.json saved through the UI is gone the
+# next time the container starts - the environment is the only durable place
+# to put configuration there.
+#
+# Passwords are read separately, one variable per host:
+#
+#   TSCONSOLE_PASSWORD_<ID>   with <ID> upper-cased, non-alphanumerics as "_"
+#
+# so that secrets stay in the secret store rather than inside a JSON blob that
+# tends to get pasted into chat windows and issue trackers.
+HOSTS_JSON_ENV = "TSCONSOLE_HOSTS_JSON"
+PASSWORD_ENV_PREFIX = "TSCONSOLE_PASSWORD_"
+
+
+def password_env_name(host_id: str) -> str:
+    safe = "".join(c if c.isalnum() else "_" for c in host_id).upper()
+    return f"{PASSWORD_ENV_PREFIX}{safe}"
+
 # How the SSH connection is made. The names match the "연결 경로" choice in
 # the console.
 #
@@ -142,16 +167,39 @@ class Registry:
         return host
 
     def load(self) -> None:
-        path = HOSTS_FILE if HOSTS_FILE.exists() else EXAMPLE_FILE
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        hosts = {h.id: h for h in (self._build(e) for e in raw.get("hosts", []))}
+        inline = os.environ.get(HOSTS_JSON_ENV, "").strip()
+        if inline:
+            raw = json.loads(inline)
+            source = f"${HOSTS_JSON_ENV}"
+        else:
+            path = HOSTS_FILE if HOSTS_FILE.exists() else EXAMPLE_FILE
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            source = str(path)
+
+        # A bare list is accepted too - it is what people write first.
+        entries = raw.get("hosts", []) if isinstance(raw, dict) else raw
+        hosts = {h.id: h for h in (self._build(e) for e in entries)}
+
+        for host in hosts.values():
+            if not host.password:
+                host.password = os.environ.get(password_env_name(host.id)) or None
+            if host.jump and not host.jump.password:
+                host.jump.password = (
+                    os.environ.get(password_env_name(host.id) + "_JUMP") or None
+                )
+
         with self._lock:
             self._hosts = hosts
-            self.source = str(path)
+            self.source = source
 
     def save(self) -> None:
         """Write hosts.json. Never writes over hosts.example.json - the first
         save on a fresh checkout creates the real file instead."""
+        if not self.writable:
+            raise OSError(
+                f"설정이 환경변수({HOSTS_JSON_ENV})에서 왔습니다. "
+                "파일로 저장해도 다음 재시작에 덮어써지므로 저장하지 않습니다."
+            )
         with self._lock:
             payload = {"hosts": [h.stored() for h in self._hosts.values()]}
             HOSTS_FILE.write_text(
@@ -162,6 +210,18 @@ class Registry:
     @property
     def using_example(self) -> bool:
         return self.source == str(EXAMPLE_FILE)
+
+    @property
+    def from_env(self) -> bool:
+        return self.source == f"${HOSTS_JSON_ENV}"
+
+    @property
+    def writable(self) -> bool:
+        """Whether 저장 can persist. Configuration handed in by the
+        environment is owned by the platform, not by this process - writing a
+        file next to it would be shadowed on the next restart and is worse
+        than admitting the button cannot help here."""
+        return not self.from_env
 
     # ------------------------------------------------------------- access
 

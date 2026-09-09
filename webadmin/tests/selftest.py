@@ -519,6 +519,98 @@ def test_connection_paths() -> None:
         check("direct without a password is refused", "비밀번호" in str(exc), str(exc))
 
 
+def test_env_config() -> None:
+    section("environment config")
+    import os
+
+    import app.config as cfg
+
+    blob = json.dumps({"hosts": [
+        {"id": "sender", "label": "s", "role": "sender",
+         "address": "desktop-nb8bfur", "username": "dicia"},
+        {"id": "odd-id.1", "label": "o", "address": "1.2.3.4", "username": "u"},
+    ]}, ensure_ascii=False)
+
+    saved = {k: os.environ.get(k) for k in
+             (cfg.HOSTS_JSON_ENV, "TSCONSOLE_PASSWORD_SENDER", "TSCONSOLE_PASSWORD_ODD_ID_1")}
+    os.environ[cfg.HOSTS_JSON_ENV] = blob
+    os.environ["TSCONSOLE_PASSWORD_SENDER"] = "from-env"
+    os.environ["TSCONSOLE_PASSWORD_ODD_ID_1"] = "odd-env"
+    try:
+        reg = Registry()
+        check("env config wins over the file", reg.from_env is True, reg.source)
+        check("hosts load from env", len(reg.all()) == 2, str(len(reg.all())))
+        check("password comes from its own variable",
+              reg.get("sender").password == "from-env")
+        check("id punctuation maps to underscores",
+              reg.get("odd-id.1").password == "odd-env",
+              cfg.password_env_name("odd-id.1"))
+        check("env config is not writable", reg.writable is False)
+        try:
+            reg.save()
+            check("save is refused under env config", False, "it wrote a file")
+        except OSError as exc:
+            check("save is refused under env config", cfg.HOSTS_JSON_ENV in str(exc))
+
+        # a bare list is what people write first
+        os.environ[cfg.HOSTS_JSON_ENV] = json.dumps(
+            [{"id": "x", "label": "x", "address": "h", "username": "u"}])
+        check("a bare list is accepted", len(Registry().all()) == 1)
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def test_deployment_guard() -> None:
+    section("deployment guard")
+    import os
+
+    from app import auth
+    from app.main import check_deployment
+
+    saved = os.environ.get("TSCONSOLE_PASSWORD")
+    os.environ.pop("TSCONSOLE_PASSWORD", None)
+    try:
+        check_deployment("127.0.0.1")
+        check("loopback needs no password", True)
+        for bind in ("0.0.0.0", "100.101.7.4", "::"):
+            try:
+                check_deployment(bind)
+                check(f"{bind} without a password is refused", False, "it started")
+            except SystemExit as exc:
+                check(f"{bind} without a password is refused",
+                      "TSCONSOLE_PASSWORD" in str(exc))
+
+        os.environ["TSCONSOLE_PASSWORD"] = "set"
+        check_deployment("0.0.0.0")
+        check("a password unlocks a public bind", True)
+        check("auth.describe reports it", auth.describe()["password_set"] is True)
+    finally:
+        if saved is None:
+            os.environ.pop("TSCONSOLE_PASSWORD", None)
+        else:
+            os.environ["TSCONSOLE_PASSWORD"] = saved
+
+
+def test_socks_config() -> None:
+    section("socks5")
+    check("no proxy configured by default", sb.SOCKS5 == "", repr(sb.SOCKS5))
+    real = sb.SOCKS5
+    sb.SOCKS5 = "not-a-hostport"          # type: ignore[misc]
+    try:
+        sb._socks_socket("h", 22)
+        check("a malformed proxy address is refused", False, "no exception")
+    except sb.SshError as exc:
+        check("a malformed proxy address is refused", "TSCONSOLE_SOCKS5" in str(exc))
+    except Exception as exc:
+        check("a malformed proxy address is refused", False, f"{type(exc).__name__}: {exc}")
+    finally:
+        sb.SOCKS5 = real                  # type: ignore[misc]
+
+
 def test_mock_devices() -> None:
     section("mock devices")
     result = asyncio.run(MockBackend().devices())
@@ -548,6 +640,9 @@ if __name__ == "__main__":
     test_registry_roundtrip()
     test_connection_paths()
     test_mock_devices()
+    test_env_config()
+    test_deployment_guard()
+    test_socks_config()
 
     print()
     if FAILURES:

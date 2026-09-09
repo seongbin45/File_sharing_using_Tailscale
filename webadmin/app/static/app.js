@@ -64,6 +64,14 @@ function el(tag, cls, text) {
 
 async function api(path, options) {
   const res = await fetch(path, options);
+  if (res.status === 401) {
+    // The session ran out (12h) or was logged out in another tab. Stop the
+    // refresh timer before leaving, or the page spends its last moments
+    // polling an endpoint that will keep saying no.
+    clearInterval(state.timer);
+    location.href = '/login';
+    throw new Error('세션이 만료되었습니다.');
+  }
   if (!res.ok) {
     let detail = `${res.status} ${res.statusText}`;
     try { detail = (await res.json()).detail || detail; } catch (e) { /* not JSON */ }
@@ -496,7 +504,7 @@ function fillForm(d) {
   $('#jump-fields').hidden = path !== 'jump';
   $('#f-pass').disabled = path === 'tsssh';
   $('#form-note').textContent = d && d.id ? `id: ${d.id}` : '등록되지 않은 기기';
-  $('#save-note').textContent = '';
+  if (state.meta && state.meta.writable !== false) $('#save-note').textContent = '';
 }
 
 async function saveServer(ev) {
@@ -613,6 +621,26 @@ async function init() {
     $('#server-info').textContent =
       `FastAPI · uvicorn ${location.host} · ${state.meta.backend === 'mock' ? 'MOCK 데이터' : 'SSH 연결'}`;
     $('#hosts-file').textContent = state.meta.hosts_file;
+
+    // A password is only configured when the console is reachable from
+    // somewhere other than this machine, which is exactly when logging out
+    // means something.
+    if (state.meta.auth && state.meta.auth.password_set) {
+      $('#logout-form').hidden = false;
+    }
+
+    if (state.meta.writable === false) {
+      // Configuration came from the environment, so the platform owns it.
+      // A save button that silently does nothing on the next restart is
+      // worse than one that says why it cannot help.
+      const save = $('#save-btn');
+      save.disabled = true;
+      save.title = '환경변수에서 설정을 읽고 있어 저장할 수 없습니다';
+      const note = $('#save-note');
+      note.className = 'note';
+      note.textContent = '설정이 환경변수에서 왔습니다. 바꾸려면 TSCONSOLE_HOSTS_JSON 을 고치고 재배포하십시오.';
+    }
+
     if (state.meta.using_example) {
       const n = $('#notice');
       n.hidden = false;

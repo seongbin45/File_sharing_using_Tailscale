@@ -25,6 +25,7 @@ import asyncio
 import base64
 import binascii
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -39,6 +40,39 @@ from .devices import list_devices
 CONNECT_TIMEOUT = 12
 PROBE_TIMEOUT = 45
 KNOWN_HOSTS = Path(__file__).resolve().parent.parent / "known_hosts"
+
+# Set when tailscaled runs in userspace mode, which is how Tailscale works
+# inside a container that cannot create a TUN device (every managed PaaS).
+# In that mode there is no network interface to route through: tailscaled
+# exposes the tailnet as a SOCKS5 proxy instead, and every connection has to
+# be dialled through it. Empty on a normal host, where the tailnet is just
+# the network and nothing special is needed.
+SOCKS5 = os.environ.get("TSCONSOLE_SOCKS5", "").strip()
+
+
+def _socks_socket(address: str, port: int):
+    """A socket to (address, port) dialled through the SOCKS5 proxy.
+
+    The name is resolved by the proxy, not here: MagicDNS names only mean
+    something inside the tailnet, so resolving locally first would fail on
+    every one of them.
+    """
+    try:
+        import socks  # PySocks
+    except ImportError as exc:
+        raise SshError(
+            "TSCONSOLE_SOCKS5 가 설정됐지만 PySocks 가 없습니다. "
+            "pip install -r requirements.txt 로 설치하십시오."
+        ) from exc
+
+    host, _, raw_port = SOCKS5.rpartition(":")
+    if not host:
+        raise SshError(f"TSCONSOLE_SOCKS5 형식이 잘못됐습니다: {SOCKS5!r} (host:port)")
+    sock = socks.socksocket()
+    sock.set_proxy(socks.SOCKS5, host, int(raw_port), rdns=True)
+    sock.settimeout(CONNECT_TIMEOUT)
+    sock.connect((address, port))
+    return sock
 
 
 class SshError(RuntimeError):
@@ -376,6 +410,8 @@ class SshBackend(Backend):
 
         if host.path == "jump":
             kwargs["sock"] = self._jump_socket(host)
+        elif SOCKS5:
+            kwargs["sock"] = _socks_socket(host.address, host.port)
 
         client.connect(**kwargs)
         try:

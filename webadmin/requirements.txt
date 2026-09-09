@@ -4,3 +4,8 @@
 fastapi==0.141.1
 uvicorn[standard]==0.41.0
 paramiko==5.0.0
+
+# Only needed when tailscaled runs in userspace mode (containers), where the
+# tailnet is reachable through a SOCKS5 proxy rather than an interface.
+# Harmless everywhere else.
+PySocks==1.7.1
