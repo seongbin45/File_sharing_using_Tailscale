@@ -164,10 +164,16 @@ cd webadmin
 python -m tests.selftest
 pip install -r tests/requirements-dev.txt
 python -m tests.authtest
+python -m tests.accesstest
 ```
 
 `authtest` 는 **실제로 서버를 띄우고 WebSocket 에 붙어 봅니다.** 로그인 없이 터미널이
-열리면 여기서 잡힙니다. 배포할 때마다 돌리십시오.
+열리면 여기서 잡힙니다. `accesstest` 는 같은 방식으로 역할별 경계를 확인합니다.
+배포할 때마다 둘 다 돌리십시오.
+
+여러 사람이 쓴다면 공유 비밀번호 대신 **tailnet 신원 + 역할 표**를 쓰십시오
+([ACCESS.md](ACCESS.md)). 사람별로 구분되고, 회수는 Tailscale admin 콘솔에서
+기기를 지우는 것으로 끝나며, 감사 로그가 남습니다.
 
 ---
 

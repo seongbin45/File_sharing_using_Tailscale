@@ -106,6 +106,27 @@ python -m app.main --ssh --host 100.101.102.103
 
 ---
 
+## 접근 권한
+
+혼자 쓴다면 공유 비밀번호(`TSCONSOLE_PASSWORD`) 하나로 충분합니다. 여러 사람이 쓰거나
+"누가 언제 무엇을 했는지"가 필요해지면 **tailnet 신원 + 역할 표**로 바꾸십시오 —
+외부 인증 서비스 없이, 이미 운영 중인 tailnet 이 신원을 담당합니다.
+
+```cmd
+set TSCONSOLE_AUTH=tailscale
+copy access.example.json access.json
+```
+
+| 단계 | 할 수 있는 것 |
+|---|---|
+| `viewer` | 읽기 |
+| `operator` | + 즉시 실행, 일시중지/재개 |
+| `admin` | + **터미널**, 연결 설정, 감사 로그 |
+
+터미널이 admin 인 이유를 포함한 설계 근거는 [ACCESS.md](ACCESS.md) 에 있습니다.
+
+---
+
 ## 화면
 
 왼쪽은 **`tailscale status` 가 보고하는 기기 목록**입니다. `hosts.json` 에 등록된 기기는
@@ -150,8 +171,14 @@ webadmin/
     backends.py      Backend 인터페이스 + MockBackend
     sshbackend.py    paramiko 구현
     devices.py       tailscale status 파싱 · 등록 호스트와 병합
+    auth.py          공유 비밀번호 로그인 (서명 쿠키)
+    identity.py      tailscale whois — 상대가 누구인지
+    access.py        역할 표 — 그 사람이 무엇을 할 수 있는지
+    audit.py         누가 언제 무엇을 했는지
     static/          화면 (빌드 도구 없음, 그냥 파일 3개)
   tests/selftest.py  테스트 러너 없이 도는 자체 점검
+  tests/authtest.py  로그인·WebSocket 이 실제로 막히는지
+  tests/accesstest.py 역할별로 실제로 막히는지
   hosts.example.json
   requirements.txt
 ```

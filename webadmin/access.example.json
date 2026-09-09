@@ -1,0 +1,29 @@
+{
+  "_comment": [
+    "누가 무엇을 할 수 있는지. access.json 으로 복사해 쓰거나,",
+    "TSCONSOLE_ACCESS_JSON 환경변수에 같은 JSON 을 넣으십시오.",
+    "TSCONSOLE_AUTH=tailscale 일 때만 사용됩니다.",
+    "",
+    "키는 Tailscale 로그인 이름(보통 이메일)입니다. tailscale status 로 확인하십시오.",
+    "",
+    "  none      아무것도 못 함. 목록에 없는 사람의 기본값",
+    "  viewer    읽기 — 대시보드, 상태, 로그",
+    "  operator  + 즉시 실행, 스케줄 일시중지/재개",
+    "  admin     + 터미널, 연결 설정 편집, 감사 로그",
+    "",
+    "터미널이 admin 인 것이 핵심입니다. 셸이 있으면 나머지 권한은 표와 무관하게",
+    "전부 가진 것과 같습니다 — 백업 스크립트를 고치고, .env 를 읽고,",
+    "스냅샷을 지울 수 있습니다. 터미널을 주는 것은 admin 을 주는 것입니다.",
+    "",
+    "default 를 none 이 아닌 값으로 두지 마십시오. tailnet 에 새 기기가 들어오면",
+    "그 사람이 자동으로 그 권한을 갖게 됩니다."
+  ],
+
+  "default": "none",
+
+  "users": {
+    "choiseongbin45@gmail.com": "admin",
+    "teammate@example.com": "operator",
+    "readonly@example.com": "viewer"
+  }
+}

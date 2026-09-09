@@ -79,6 +79,19 @@ a:hover { color: var(--blue); }
 .tailnet.ok  .dot { background: var(--green); }
 .tailnet.bad .dot { background: var(--amber); }
 
+.whoami { display: flex; align-items: center; gap: 7px; color: var(--fg-dim); }
+.whoami .lvl {
+  padding: 2px 7px;
+  border: 1px solid var(--fg-mute);
+  color: var(--fg-mute);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+}
+.whoami .lvl.admin    { border-color: var(--cyan);  color: var(--cyan); }
+.whoami .lvl.operator { border-color: var(--amber); color: var(--amber); }
+.whoami .lvl.viewer   { border-color: var(--green); color: var(--green); }
+.whoami .lvl.none     { border-color: var(--red);   color: var(--red); }
+
 .auto { display: flex; align-items: center; gap: 6px; color: var(--fg-mute); cursor: pointer; }
 .auto input { accent-color: var(--cyan); }
 

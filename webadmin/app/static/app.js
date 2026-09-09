@@ -7,6 +7,7 @@ const state = {
   selected: null,      // the device object clicked in the sidebar
   overview: null,      // { sender, receiver }
   meta: null,
+  level: 'admin',      // what this viewer may do; 'admin' until told otherwise
   tab: 'overview',
   timer: null,
   term: null,
@@ -566,6 +567,30 @@ async function testConn() {
   }
 }
 
+// ------------------------------------------------------------- permissions
+
+const RANK = { none: 0, viewer: 1, operator: 2, admin: 3 };
+const atLeast = (need) => (RANK[state.level] ?? 3) >= RANK[need];
+
+function applyLevel() {
+  // Disabling with a reason beats letting the click through to a 403. The
+  // server enforces all of this regardless - this is courtesy, not security.
+  const deny = (sel, need, why) => {
+    document.querySelectorAll(sel).forEach((node) => {
+      if (atLeast(need)) return;
+      node.disabled = true;
+      node.title = why;
+    });
+  };
+  deny('[data-action]', 'operator', '운영 권한이 필요합니다');
+  deny('#term-connect, #open-terminal', 'admin', '터미널은 관리자만 열 수 있습니다');
+  deny('#save-btn, #test-conn, #add-server', 'admin', '연결 설정은 관리자만 바꿀 수 있습니다');
+
+  if (!atLeast('admin')) {
+    document.querySelectorAll('.quick .btn').forEach((b) => { b.disabled = true; });
+  }
+}
+
 // ------------------------------------------------------------------ tabs
 
 function selectTab(name) {
@@ -629,6 +654,25 @@ async function init() {
       $('#logout-form').hidden = false;
     }
 
+    const a = state.meta.auth || {};
+    state.level = a.level || 'admin';
+
+    if (a.mode === 'tailscale') {
+      // Show who the tailnet says you are and what that gets you. A console
+      // that silently drops half its buttons is more confusing than one that
+      // says why.
+      const LABEL = { admin: '관리자', operator: '운영', viewer: '읽기', none: '권한 없음' };
+      const box = $('#whoami');
+      box.hidden = false;
+      $('#whoami-sep').hidden = false;
+      box.textContent = '';
+      box.append(el('span', null, a.identity ? a.identity.login : '신원 미확인'));
+      box.append(el('span', 'lvl ' + state.level, LABEL[state.level] || state.level));
+      if (a.identity) box.title = `${a.identity.name} · ${a.identity.node} (${a.identity.via})`;
+    }
+
+    applyLevel();
+
     if (state.meta.writable === false) {
       // Configuration came from the environment, so the platform owns it.
       // A save button that silently does nothing on the next restart is
@@ -652,6 +696,7 @@ async function init() {
   }
 
   await refresh();
+  applyLevel();       // quick-command buttons exist by now
   startTimer();
 }
 

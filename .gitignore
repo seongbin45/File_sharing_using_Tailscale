@@ -19,3 +19,7 @@ Thumbs.db
 # Web console host registry: contains addresses, accounts and possibly
 # passwords for real machines. hosts.example.json is the template.
 webadmin/hosts.json
+
+# Who may do what, and what they did. Both are site-specific.
+webadmin/access.json
+webadmin/audit.log

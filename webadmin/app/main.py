@@ -34,7 +34,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import auth
+from . import access, audit, auth, identity
 from .backends import Backend, MockBackend
 from .config import PATHS, Host, registry
 
@@ -58,21 +58,76 @@ def use_backend(new: Backend) -> None:
 # route and the WebSocket, requires one.
 OPEN_PATHS = {"/login", "/healthz"}
 
+# "password"  one shared secret (auth.py). No identity, no per-person revoke.
+# "tailscale" the tailnet says who you are, access.json says what you may do.
+# "none"      loopback only; check_deployment refuses anything else.
+AUTH_MODE = os.environ.get("TSCONSOLE_AUTH", "").strip().lower() or None
+
+
+def auth_mode() -> str:
+    if AUTH_MODE:
+        return AUTH_MODE
+    return "password" if auth.configured_password() else "none"
+
+
+async def _caller(request: Request) -> tuple[dict[str, Any] | None, str]:
+    """(identity, level) for this request under the active mode."""
+    if auth_mode() != "tailscale":
+        # A shared password proves possession of the password and nothing
+        # else, so everyone holding it is the same person as far as this
+        # console can tell. Calling that "admin" is honest; pretending the
+        # levels mean something here would not be.
+        return None, access.ADMIN
+
+    who = await identity.identify(
+        request.client.host if request.client else None,
+        request.client.port if request.client else 0,
+        request.headers,
+    )
+    return who, access.policy.level_for(who["login"] if who else None)
+
 
 @app.middleware("http")
 async def require_session(request: Request, call_next):
-    if not auth.configured_password():
-        # No password configured means loopback-only operation, which
-        # check_deployment() has already enforced at startup.
-        return await call_next(request)
-    if request.url.path in OPEN_PATHS:
-        return await call_next(request)
-    if auth.cookie_valid(request.cookies.get(auth.COOKIE_NAME)):
+    path = request.url.path
+    if path in OPEN_PATHS:
         return await call_next(request)
 
-    if request.url.path.startswith("/api/"):
-        return JSONResponse({"detail": "로그인이 필요합니다."}, status_code=401)
-    return RedirectResponse("/login", status_code=303)
+    mode = auth_mode()
+
+    if mode == "none":
+        return await call_next(request)
+
+    if mode == "password":
+        if auth.cookie_valid(request.cookies.get(auth.COOKIE_NAME)):
+            request.state.who, request.state.level = None, access.ADMIN
+            return await call_next(request)
+        if path.startswith("/api/"):
+            return JSONResponse({"detail": "로그인이 필요합니다."}, status_code=401)
+        return RedirectResponse("/login", status_code=303)
+
+    # tailscale
+    who, level = await _caller(request)
+    request.state.who, request.state.level = who, level
+    required = access.required_for(request.method, path)
+
+    if not access.at_least(level, required):
+        audit.record(
+            "denied", who=who["login"] if who else None, level=level,
+            client=_client(request), method=request.method, path=path,
+            required=required,
+        )
+        detail = (
+            "tailnet 신원을 확인하지 못했습니다."
+            if who is None
+            else f"이 작업에는 '{access.LABEL[required]}' 권한이 필요합니다 "
+                 f"(현재: {access.LABEL.get(level, level)})."
+        )
+        if path.startswith("/api/"):
+            return JSONResponse({"detail": detail}, status_code=403)
+        return HTMLResponse(_denied_html(who, level, detail), status_code=403)
+
+    return await call_next(request)
 
 
 def _client(request: Request) -> str:
@@ -177,6 +232,27 @@ async def logout() -> Any:
     return response
 
 
+def _denied_html(who: dict[str, Any] | None, level: str, detail: str) -> str:
+    name = who["login"] if who else "(신원 미확인)"
+    return LOGIN_PAGE.replace("__SUB__", "접근 거부").replace(
+        "__ERROR__",
+        f'<p class="err">{detail}</p><p style="font-size:11px;color:#767676">{name}</p>',
+    ).replace(
+        '<input type="password" name="password" placeholder="비밀번호" autofocus autocomplete="current-password">',
+        "",
+    ).replace('<button type="submit">로그인</button>', "")
+
+
+@app.get("/api/audit")
+async def audit_tail(request: Request, lines: int = 100) -> dict[str, Any]:
+    """Admin only - the log names who did what, which is itself worth
+    protecting."""
+    level = getattr(request.state, "level", access.ADMIN)
+    if not access.at_least(level, access.ADMIN):
+        raise HTTPException(status_code=403, detail="감사 로그는 관리자만 볼 수 있습니다.")
+    return {"status": audit.status(), "events": audit.tail(max(1, min(lines, 1000)))}
+
+
 @app.get("/healthz")
 async def healthz() -> dict[str, Any]:
     """Unauthenticated on purpose - the platform polls it to decide whether
@@ -195,14 +271,22 @@ def _host_or_404(host_id: str) -> Host:
 
 
 @app.get("/api/meta")
-async def meta() -> dict[str, Any]:
+async def meta(request: Request) -> dict[str, Any]:
+    who = getattr(request.state, "who", None)
     return {
         "backend": backend.name,
         "hosts_file": registry.source,
         "using_example": registry.using_example,
         "from_env": registry.from_env,
         "writable": registry.writable,
-        "auth": auth.describe(),
+        "auth": {
+            **auth.describe(),
+            "mode": auth_mode(),
+            "identity": who,
+            "level": getattr(request.state, "level", access.ADMIN),
+            "policy": access.policy.summary() if auth_mode() == "tailscale" else None,
+            "audit": audit.status(),
+        },
     }
 
 
@@ -268,10 +352,14 @@ class ActionRequest(BaseModel):
 
 
 @app.post("/api/hosts/{host_id}/action")
-async def host_action(host_id: str, req: ActionRequest) -> JSONResponse:
+async def host_action(request: Request, host_id: str, req: ActionRequest) -> JSONResponse:
     host = _host_or_404(host_id)
     if req.action not in ("run", "enable", "disable"):
         raise HTTPException(status_code=400, detail=f"알 수 없는 동작: {req.action}")
+    who = getattr(request.state, "who", None)
+    audit.record("action", who=who["login"] if who else None,
+                 level=getattr(request.state, "level", None),
+                 client=_client(request), host=host_id, action=req.action)
     try:
         return JSONResponse(await backend.action(host, req.action))
     except Exception as exc:
@@ -304,13 +392,17 @@ class ServerRequest(BaseModel):
 
 
 @app.post("/api/servers")
-async def save_server(req: ServerRequest) -> dict[str, Any]:
+async def save_server(request: Request, req: ServerRequest) -> dict[str, Any]:
     if req.path not in PATHS:
         raise HTTPException(status_code=400, detail=f"알 수 없는 연결 경로: {req.path}")
     data = req.model_dump(exclude_none=True)
     if req.jump is not None:
         data["jump"] = req.jump.model_dump()
     host = registry.upsert(data)
+    who = getattr(request.state, "who", None)
+    audit.record("server.save", who=who["login"] if who else None,
+                 level=getattr(request.state, "level", None),
+                 client=_client(request), host=host.id, address=host.address)
     try:
         registry.save()
         saved, note = True, f"hosts.json 에 저장했습니다"
@@ -347,11 +439,33 @@ async def set_credentials(host_id: str, req: CredentialRequest) -> dict[str, Any
 @app.websocket("/api/hosts/{host_id}/terminal")
 async def terminal(ws: WebSocket, host_id: str) -> None:
     # The HTTP middleware does not run for WebSocket connections - the scope
-    # type is different - so the session is checked here explicitly. Without
-    # this the dashboard would be behind a password and the shell would not.
-    if auth.configured_password() and not auth.cookie_valid(ws.cookies.get(auth.COOKIE_NAME)):
-        await ws.close(code=1008)   # policy violation
-        return
+    # type is different - so this is checked here explicitly. Without it the
+    # dashboard would be behind authentication and the shell would not.
+    mode = auth_mode()
+    who: dict[str, Any] | None = None
+    level = access.ADMIN
+
+    if mode == "password":
+        if not auth.cookie_valid(ws.cookies.get(auth.COOKIE_NAME)):
+            await ws.close(code=1008)   # policy violation
+            return
+    elif mode == "tailscale":
+        who = await identity.identify(
+            ws.client.host if ws.client else None,
+            ws.client.port if ws.client else 0,
+            ws.headers,
+        )
+        level = access.policy.level_for(who["login"] if who else None)
+        if not access.at_least(level, access.ADMIN):
+            audit.record("denied", who=who["login"] if who else None, level=level,
+                         client=ws.client.host if ws.client else None,
+                         method="WS", path=f"/api/hosts/{host_id}/terminal",
+                         required=access.ADMIN)
+            await ws.close(code=1008)
+            return
+
+    audit.record("terminal.open", who=who["login"] if who else None, level=level,
+                 client=ws.client.host if ws.client else None, host=host_id)
 
     await ws.accept()
     host = registry.get(host_id)
@@ -431,20 +545,53 @@ async def index() -> FileResponse:
 
 
 def check_deployment(bind: str) -> None:
-    """Refuse to start open.
+    """Refuse to start open, and decide whether identity headers can be
+    believed.
 
     Binding anywhere but loopback publishes an interactive shell on other
-    people's computers. Requiring a password there is not a hardening option
-    to be talked out of; the process exits instead, because a console that
-    fails to boot is recoverable and one that boots wide open may not be.
+    people's computers. Requiring authentication there is not a hardening
+    option to be talked out of; the process exits instead, because a console
+    that fails to boot is recoverable and one that boots wide open may not be.
     """
+    mode = auth_mode()
+
+    # `tailscale serve` headers are believed ONLY on a loopback bind, where
+    # the only thing that can connect is already on this machine. On any
+    # other address a single
+    #     curl -H "Tailscale-User-Login: admin@example.com"
+    # would be the entire access-control system, so they are refused and
+    # whois - which reads the actual peer of the TCP connection - is the only
+    # accepted source.
+    identity.TRUST_HEADERS = auth.is_loopback(bind)
+
+    if mode == "tailscale":
+        if not identity.available():
+            raise SystemExit(
+                "\n거부: TSCONSOLE_AUTH=tailscale 인데 tailscale 명령을 찾지 못했습니다.\n"
+                "이 모드는 tailscaled 에게 상대가 누구인지 물어봅니다. 그것이 없으면\n"
+                "모든 요청이 신원 미확인으로 거부되어 콘솔이 쓸모없어집니다.\n"
+            )
+        if not access.policy.configured:
+            raise SystemExit(
+                f"\n거부: 권한 표가 비어 있습니다 ({access.policy.source}).\n"
+                "\n아무도 아무 권한이 없으므로 콘솔이 아무 일도 하지 못합니다.\n"
+                "access.json 을 만들거나 TSCONSOLE_ACCESS_JSON 을 설정하십시오:\n"
+                '\n  {"users": {"you@example.com": "admin"}, "default": "none"}\n'
+            )
+        return
+
     if auth.auth_required(bind) and not auth.configured_password():
         raise SystemExit(
-            f"\n거부: {bind} 에 바인딩하려면 TSCONSOLE_PASSWORD 가 필요합니다.\n"
-            "\n이 콘솔은 다른 컴퓨터의 셸을 그대로 열어 줍니다. 로그인 없이 공개 주소에\n"
+            f"\n거부: {bind} 에 바인딩하려면 인증이 필요합니다.\n"
+            "\n이 콘솔은 다른 컴퓨터의 셸을 그대로 열어 줍니다. 인증 없이 공개 주소에\n"
             "띄우면 그 자체가 무인증 원격 실행 창구가 됩니다.\n"
-            "\n  export TSCONSOLE_PASSWORD='...'   (Render: 환경변수에 추가)\n"
-            "\n비밀번호 없이 쓰려면 루프백(127.0.0.1)에 바인딩하십시오.\n"
+            "\n둘 중 하나를 고르십시오.\n"
+            "\n  공유 비밀번호 하나:\n"
+            "      export TSCONSOLE_PASSWORD='...'\n"
+            "\n  tailnet 신원 + 권한 표 (사람별 구분·회수 가능, 권장):\n"
+            "      export TSCONSOLE_AUTH=tailscale\n"
+            "      # access.json 에 누가 무엇을 할 수 있는지 적습니다\n"
+            "\n인증 없이 쓰려면 루프백(127.0.0.1)에 바인딩하십시오.\n"
         )
 
 
@@ -472,6 +619,8 @@ def main() -> None:
     args = parser.parse_args()
 
     check_deployment(args.host)
+    audit.record("start", level=None, mode=auth_mode(), bind=args.host,
+                 backend="ssh" if args.ssh else "mock")
 
     if args.ssh:
         try:
