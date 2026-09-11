@@ -1,0 +1,9 @@
+# Pinned: this is packaged into a released .exe, and a surprise upgrade that
+# breaks the build is worse than being a few months behind.
+PySide6==6.11.2
+py7zr==1.1.3
+paramiko==5.0.0
+requests==2.33.1
+
+# Build-time only.
+pyinstaller==6.16.0
