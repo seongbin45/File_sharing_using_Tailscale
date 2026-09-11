@@ -24,7 +24,10 @@ block_cipher = None
 here = os.path.abspath(os.getcwd())            # run from desktop/
 
 a = Analysis(
-    ["app/main.py"],
+    # Must be absolute: PyInstaller resolves a relative script path against
+    # the .spec file's own directory (build/), not the cwd pathex uses, so
+    # a bare "app/main.py" here looks for build/app/main.py and fails.
+    [os.path.join(here, "app", "main.py")],
     pathex=[here],
     binaries=[],
     datas=[],
