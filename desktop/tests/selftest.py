@@ -21,6 +21,15 @@ import tempfile
 import time
 from pathlib import Path
 
+# Windows' console defaults to a legacy codepage (cp1252), not UTF-8, so a
+# bare print() of the Korean section/check labels below would crash before
+# any real assertion runs. Force UTF-8 before anything else in this file
+# prints. See docs/VERIFICATION.md section 15 for the failure this fixes.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tsbackup import archiver, engine_core  # noqa: E402

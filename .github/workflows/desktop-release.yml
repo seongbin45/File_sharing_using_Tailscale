@@ -27,6 +27,16 @@ jobs:
     defaults:
       run:
         working-directory: desktop     # spec expects to run from desktop/
+    env:
+      # windows-latest's stdout here is a pipe captured by the pwsh runner,
+      # not a real console, so Python falls back to the legacy codepage
+      # (cp1252) for it - the same failure a real Korean-locale Windows PC
+      # hits in its default console. Belt-and-suspenders with the in-code
+      # sys.stdout.reconfigure() calls: PYTHONUTF8 is PEP 540's broader
+      # UTF-8 mode (filesystem encoding, locale.getpreferredencoding());
+      # PYTHONIOENCODING pins stdin/stdout/stderr encoding directly.
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
 
     steps:
       - name: Checkout

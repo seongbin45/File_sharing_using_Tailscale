@@ -14,6 +14,18 @@ from __future__ import annotations
 
 import argparse
 import sys
+
+# Windows' console defaults to a legacy codepage (cp1252), not UTF-8, so a
+# bare print() of the Korean text below - including argparse's own --help
+# strings - would crash. Force UTF-8 before argparse or any print() runs.
+# hasattr guards both: PyInstaller's console=False (windowed) build gives
+# this process no console at all, so sys.stdout/stderr are None here, not
+# just non-UTF-8. See docs/VERIFICATION.md section 15.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 from pathlib import Path
 
 from tsbackup import engine_core
@@ -26,13 +38,30 @@ def _log() -> Log:
     return Log(config_dir() / "tsbackup.log")
 
 
+def _say(log: Log, msg: str) -> None:
+    """Record msg to the log file, and echo it to a console if one exists.
+
+    The windowed (console=False) build - the one Task Scheduler launches -
+    has no console at all: sys.stdout is None, and a bare print() would
+    crash --run/--scan every time. log.line() is the durable record and is
+    left unguarded (a failure there, e.g. disk full, is worth surfacing);
+    the console echo is best-effort only and must never take the run down.
+    """
+    log.line(msg)
+    if sys.stdout is not None:
+        try:
+            print(msg)
+        except Exception:
+            pass
+
+
 def _headless_run() -> int:
     cfg = AppConfig.load()
     log = _log()
     problems = cfg.problems()
     if problems:
         for p in problems:
-            print("설정 필요:", p)
+            _say(log, f"설정 필요: {p}")
         return 2
     result = engine_core.run_sender_once(cfg, log.line)
     return 0 if result.ok else 1
@@ -43,9 +72,9 @@ def _headless_scan() -> int:
     log = _log()
     receiver = Receiver(cfg, log.line)
     if cfg.receiver_uses_http():
-        print("http 수신은 GUI 상주가 필요합니다. --scan 은 폴더 방식만 처리합니다.")
+        _say(log, "http 수신은 GUI 상주가 필요합니다. --scan 은 폴더 방식만 처리합니다.")
     count = receiver.scan_once()
-    print(f"{count}개 처리")
+    _say(log, f"{count}개 처리")
     return 0
 
 
@@ -100,7 +129,13 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.config:
-        print(CONFIG_PATH)
+        # Manual/interactive diagnostic, not a Task Scheduler path - nothing
+        # to log, so just avoid crashing under console=False (see _say).
+        if sys.stdout is not None:
+            try:
+                print(CONFIG_PATH)
+            except Exception:
+                pass
         return 0
     if args.run:
         return _headless_run()
