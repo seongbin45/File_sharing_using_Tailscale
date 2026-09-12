@@ -54,7 +54,20 @@
 
 ## 설치와 실행
 
-배포된 `TsBackup.exe` 를 실행하면 됩니다(설치 불필요). 소스로 실행하려면:
+릴리스의 `TsBackup-Setup.exe` 를 받아 실행합니다.
+
+- **누구를 위해 설치할지** 화면에서 고릅니다 — *나만* (관리자 권한 불필요) 또는
+  *이 컴퓨터의 모든 사용자* (Program Files, UAC 필요). 둘 중 하나를 고르면 됩니다.
+- **Windows 시작 시 자동 실행** 체크박스는 기본으로 켜져 있습니다. 이게 켜져
+  있으면 로그인할 때 트레이로 떠서 계속 상주하고, 앱 안의 자체 타이머가 예약된
+  시각마다 알아서 백업을 돕니다 — 작업 스케줄러 등록이 따로 필요 없습니다.
+- 설치가 끝나면 바로 앱이 뜨고, **연결 설정** 화면에서 역할(보내는 쪽/받는 쪽),
+  폴더, 전송 방식, 주기 같은 자동화 값을 직접 입력합니다.
+- 제거는 시작 메뉴의 "Uninstall TsBackup" 또는 Windows 설정의 앱 목록에서.
+  설정 파일(`%LOCALAPPDATA%\TsBackup\config.json`)은 제거해도 남습니다 —
+  다시 설치하면 이전 설정 그대로 이어집니다.
+
+소스로 실행하려면:
 
 ```cmd
 cd desktop
@@ -63,7 +76,8 @@ python -m venv .venv
 .venv\Scripts\python -m app.main
 ```
 
-무인 실행(작업 스케줄러)용 헤드리스 모드:
+무인 실행(작업 스케줄러)용 헤드리스 모드도 여전히 있습니다 — 트레이 상주 대신
+Task Scheduler 로 직접 돌리고 싶을 때 씁니다:
 
 ```cmd
 TsBackup.exe --run     :: 보내는 쪽: 한 번 압축·전송 후 종료
@@ -71,7 +85,8 @@ TsBackup.exe --scan    :: 받는 쪽: 수신 폴더 한 번 처리 후 종료
 TsBackup.exe --config  :: 설정 파일 경로 출력
 ```
 
-설정은 `%LOCALAPPDATA%\TsBackup\config.json` 에 저장됩니다(.exe 옆이 아님 —
+설정은 설치 방식(나만/모든 사용자)과 무관하게 항상
+`%LOCALAPPDATA%\TsBackup\config.json` 에 저장됩니다(.exe 옆이 아님 —
 Program Files 는 일반 계정이 못 씁니다).
 
 ---

@@ -379,15 +379,49 @@ GUI 배선은 오프스크린 Qt(`QT_QPA_PLATFORM=offscreen`)로 임포트·인�
 정지)까지 오프스크린으로 돌려 `압축·전송 중 → 대기`, `진행률 100`, `transport:
 fake`, 인박스에 아카이브 1개, `engine.running=False` 를 확인했습니다.
 
-### 아직 검증 안 된 것 (실기 필요)
+### 아직 검증 안 된 것 (실기 필요, §15 최초 작성 시점)
 
 - **실제 Windows 에서의 GUI** — 오프스크린이 아닌 진짜 창·트레이·최소화 동작
 - **실제 전송** — Taildrop(`tailscale file cp`), OpenSSH SFTP, HTTP 청크 업로드를
   두 기기 사이에서 실측 (코어 테스트는 가짜 전송으로 로직만 확인)
-- **PyInstaller 빌드** — `.exe` 는 Windows 러너/PC 에서만 만들어집니다. 빌드
-  성공과 산출물 실행은 실기 또는 CI(`desktop-release.yml`)에서 확인해야 합니다.
 - **sftp 호스트 키 핀·`TSBACKUP_SFTP_PASSWORD`**, **http 토큰 거부** 의 실제
   네트워크 동작 (코드 경로는 있으나 실기 미검증)
+
+### 2026-09-12 후속 — 실기에서 터진 크래시, 그리고 인스톨러
+
+**PyInstaller 빌드 자체는 이후 CI(`desktop-release.yml`)에서 여러 차례 실제로
+성공했습니다** — 위 목록의 "PyInstaller 빌드" 항목은 이제 검증됨으로 갱신합니다.
+다만 그 과정에서 헤드리스 코어 테스트로는 잡히지 않는 실기 전용 결함이 두 건
+나왔고, 사용자가 실제로 배포된 `.exe` 를 실행하면서 세 번째가 나왔습니다:
+
+| 결함 | 어디서 안 잡혔나 | 고침 |
+|---|---|---|
+| Windows 콘솔이 cp1252 라 한글 `print()` 가 `UnicodeEncodeError` | 이 리눅스 샌드박스는 UTF-8 이라 재현 안 됨 — 실제 Windows 러너에서 CI 가 처음 잡음 | `sys.stdout/stderr.reconfigure(encoding="utf-8")` + CI 에 `PYTHONUTF8`/`PYTHONIOENCODING` |
+| `console=False` 빌드는 `sys.stdout` 이 `None` — 인코딩과 무관하게 `print()` 가 무조건 크래시 | 위와 같은 이유로 CI 가 잡음(코드 리뷰 중 발견, 실행 전에) | 콘솔 유무를 `is not None` 으로 가드, 상태는 항상 로그 파일로 |
+| 프로즌 엔트리 스크립트(`app/main.py`)의 상대 임포트(`from .main_window import ...`) — PyInstaller 부트로더는 이 파일을 진짜 `__main__` 으로 실행해 부모 패키지가 없음(`python -m app.main` 과 다름) | **CI 스모크 테스트가 `--config` 만 돌려서 놓침** — `_gui()` 까지 안 가고 리턴함. **실제 사용자가 배포된 `.exe` 를 켜고서야** `ImportError: attempted relative import with no known parent package` 로 드러남 | 절대 임포트(`from app.main_window import ...`)로 교체. 같은 부류의 재발을 잡도록 `--check-gui` (창은 안 띄우고 그 임포트만 검사) 추가, CI 스모크 테스트에 편입 |
+
+이 세 번째 것이 중요한 이유: **오프스크린 Qt 임포트 테스트(§15 본문의
+"GUI 배선은 오프스크린 Qt 로... 확인")는 `app.main_window`/`app.tray` 를 평범한
+모듈 임포트로 불러왔지, `app/main.py` 자체를 프로즌 엔트리 스크립트로 실행한 게
+아니었습니다.** 그래서 "임포트가 되는가"는 확인했지만 "프로즌 상태의 `main.py`
+자신의 임포트문이 유효한가"는 놓쳤습니다. 로컬에서 `python app/main.py`(⚠️
+`-m` 없이 직접 실행 — 정확히 같은 `__main__`/부모 패키지 없음 조건)로 재현·수정
+확인 후, 같은 방법으로 이전 코드가 정확히 같은 오류를 내는 것도 재확인했습니다.
+
+**인스톨러 추가** — `.exe` 를 그냥 배포하는 대신 Inno Setup 으로 감싸
+`TsBackup-Setup.exe` 를 만듭니다(`desktop/build/tsbackup.iss`). CI 가 이제
+검증하는 것: 인스톨러가 실제로 컴파일되는지, `/CURRENTUSER` 로 조용히 설치한
+뒤 **설치된 경로**(`%LOCALAPPDATA%\Programs\TsBackup\TsBackup.exe`)에서
+`--config`/`--check-gui` 가 통과하는지.
+
+**여전히 미검증(실기 필요)**:
+- 실제 대화형 마법사 — "나만 설치 / 모든 사용자로 설치" 선택 화면이 실제로
+  뜨고 동작하는지 (CI 는 `/CURRENTUSER` 조용 설치만 거침)
+- 모든 사용자로 설치하는 경로의 실제 UAC 상승
+- "Windows 시작 시 자동 실행" 체크가 실제 로그인 이후에도 살아남는지 — CI 는
+  시작프로그램 폴더에 바로가기 파일이 **생기는 것**까지만 확인 가능하고, 실제
+  재부팅·로그인 후 Windows 가 그걸 실행하는지는 확인할 수 없습니다
+- 제거(Uninstall) 가 실제로 깨끗한지, 설정 파일이 재설치 후에도 정말 남는지
 
 ---
 

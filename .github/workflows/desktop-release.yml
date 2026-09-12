@@ -1,9 +1,13 @@
 name: desktop-release
 
-# Build the TsBackup desktop app into a Windows .exe and attach it to a
-# GitHub Release. PyInstaller output is OS-specific, so this MUST run on a
-# Windows runner - a Linux build would produce an ELF, not the .exe the
-# release needs.
+# Build the TsBackup desktop app and package it as a Windows installer
+# (TsBackup-Setup.exe, via Inno Setup - see build/tsbackup.iss), then
+# attach that installer to a GitHub Release. PyInstaller output is
+# OS-specific, so this MUST run on a Windows runner - a Linux build would
+# produce an ELF, not the .exe the installer needs to wrap. Inno Setup
+# 6.7.1 ships preinstalled on windows-latest (Windows Server 2025 image;
+# NSIS does not, as of that image - confirmed against actions/runner-images'
+# published manifest), so no extra installer-tool setup step is needed.
 #
 # Trigger: push a version tag.
 #     git tag v0.1.0
@@ -71,13 +75,40 @@ jobs:
           .\dist\TsBackup.exe --config
           .\dist\TsBackup.exe --check-gui
 
-      # Always keep the .exe as a build artifact, even for workflow_dispatch
-      # runs that are not tied to a tag.
+      - name: Determine version
+        # From the vX.Y.Z tag when this run was triggered by one; 0.0.0 for
+        # a workflow_dispatch run with no tag context (e.g. validating the
+        # pipeline before cutting a release).
+        id: ver
+        shell: pwsh
+        run: |
+          $raw = "${{ github.ref_name }}"
+          if ($raw -match '^v(\d+\.\d+\.\d+)$') { $v = $matches[1] } else { $v = "0.0.0" }
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Build installer
+        run: iscc /DMyAppVersion=${{ steps.ver.outputs.version }} build\tsbackup.iss
+
+      - name: Install and smoke-test the installer
+        # Proves the *installed* app actually runs from where the installer
+        # puts it, not just that the installer compiled. /CURRENTUSER runs
+        # the same per-user path a real user could pick interactively, but
+        # silently and without a UAC prompt, so it works unattended here.
+        shell: pwsh
+        run: |
+          Start-Process -FilePath ".\dist\TsBackup-Setup.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/CURRENTUSER" -Wait
+          $installed = "$env:LOCALAPPDATA\Programs\TsBackup\TsBackup.exe"
+          if (!(Test-Path $installed)) { throw "installed exe not found at $installed" }
+          & $installed --config
+          & $installed --check-gui
+
+      # Always keep the installer as a build artifact, even for
+      # workflow_dispatch runs that are not tied to a tag.
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: TsBackup-exe
-          path: desktop/dist/TsBackup.exe
+          name: TsBackup-Setup
+          path: desktop/dist/TsBackup-Setup.exe
           if-no-files-found: error
 
       # Only on a version tag: publish/attach to the release.
@@ -85,5 +116,5 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: desktop/dist/TsBackup.exe
+          files: desktop/dist/TsBackup-Setup.exe
           fail_on_unmatched_files: true
