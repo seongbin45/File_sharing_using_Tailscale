@@ -60,9 +60,16 @@ jobs:
         run: pyinstaller build/tsbackup.spec
 
       - name: Smoke-test the binary
-        # --config just prints the config path; proves the onefile bundle
-        # imports (py7zr codecs, transports) without needing a display.
-        run: .\dist\TsBackup.exe --config
+        # --config proves the onefile bundle imports (py7zr codecs,
+        # transports) without needing a display. --check-gui separately
+        # proves the actual GUI launch path's imports resolve - --config
+        # alone missed a real bug (a relative import that only breaks
+        # once frozen, since PyInstaller's bootloader runs this entry
+        # script as bare __main__, unlike `python -m app.main` in dev)
+        # because it returns before _gui() is ever reached.
+        run: |
+          .\dist\TsBackup.exe --config
+          .\dist\TsBackup.exe --check-gui
 
       # Always keep the .exe as a build artifact, even for workflow_dispatch
       # runs that are not tied to a tag.

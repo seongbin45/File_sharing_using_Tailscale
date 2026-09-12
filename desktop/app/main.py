@@ -78,12 +78,35 @@ def _headless_scan() -> int:
     return 0
 
 
+def _check_gui_imports() -> int:
+    """CI-only diagnostic: prove the GUI path's imports resolve, without
+    opening a real window or event loop (so it's safe on a headless runner
+    with no display). This exists because --config exits before ever
+    reaching _gui(), so it never caught the relative-import bug that broke
+    every real launch of the shipped .exe - this exercises the same import
+    statements _gui() does, inside this same frozen entry script.
+    """
+    from PySide6.QtWidgets import QApplication, QSystemTrayIcon  # noqa: F401
+
+    from app.main_window import MainWindow  # noqa: F401
+    from app.tray import Tray  # noqa: F401
+
+    return 0
+
+
 def _gui() -> int:
     # Imported here so the headless modes do not require Qt to be present.
     from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
-    from .main_window import MainWindow
-    from .tray import Tray
+    # Absolute, not relative: PyInstaller's frozen bootloader runs this
+    # file directly as bare __main__ with no parent package, unlike
+    # `python -m app.main` (which sets one up) - a relative import here
+    # crashes the shipped .exe with "attempted relative import with no
+    # known parent package" the moment the GUI path runs. main_window.py
+    # and tray.py's OWN relative imports (of .icons etc.) stay fine either
+    # way, since those modules load normally once imported from here.
+    from app.main_window import MainWindow
+    from app.tray import Tray
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)   # closing the window hides to tray
@@ -126,8 +149,14 @@ def main() -> int:
     parser.add_argument("--run", action="store_true", help="한 번 압축·전송 후 종료")
     parser.add_argument("--scan", action="store_true", help="수신 폴더를 한 번 처리 후 종료")
     parser.add_argument("--config", help="설정 파일 경로 표시", action="store_true")
+    parser.add_argument(
+        "--check-gui", action="store_true",
+        help=argparse.SUPPRESS,  # CI diagnostic only, not a user-facing mode
+    )
     args = parser.parse_args()
 
+    if args.check_gui:
+        return _check_gui_imports()
     if args.config:
         # Manual/interactive diagnostic, not a Task Scheduler path - nothing
         # to log, so just avoid crashing under console=False (see _say).

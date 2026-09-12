@@ -31,6 +31,7 @@ python -m venv .venv
 
 ```cmd
 dist\TsBackup.exe --config     :: 설정 파일 경로가 찍히면 임포트·번들 정상
+dist\TsBackup.exe --check-gui  :: GUI 쪽 임포트만 검사 (창은 안 뜸) - CI 도 이걸로 확인
 dist\TsBackup.exe              :: GUI 가 뜨는지
 ```
 
