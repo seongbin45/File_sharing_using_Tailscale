@@ -118,3 +118,28 @@ jobs:
         with:
           files: desktop/dist/TsBackup-Setup.exe
           fail_on_unmatched_files: true
+
+      - name: Remove stale release assets
+        # softprops/action-gh-release only uploads what it's told to - it
+        # doesn't remove assets a PREVIOUS run on this same tag published
+        # under a different name (this is exactly how v0.1.0 ended up with
+        # both the old portable TsBackup.exe and the new TsBackup-Setup.exe
+        # sitting side by side after this installer change). Keep only the
+        # current asset name so a release page never shows two conflicting
+        # downloads. gh CLI + GITHUB_TOKEN are already available on the
+        # runner - no extra setup needed.
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $repo = "${{ github.repository }}"
+          $names = gh release view $tag --repo $repo --json assets --jq ".assets[].name"
+          foreach ($name in ($names -split "`n")) {
+            $name = $name.Trim()
+            if ($name -and $name -ne "TsBackup-Setup.exe") {
+              Write-Host "Removing stale release asset: $name"
+              gh release delete-asset $tag $name --repo $repo --yes
+            }
+          }
