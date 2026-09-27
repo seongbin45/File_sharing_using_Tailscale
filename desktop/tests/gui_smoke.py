@@ -20,6 +20,7 @@ target cleanly, not that pairing works end to end on a real tailnet.
 
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 import time
@@ -388,4 +389,18 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    _code = main()
+    # Real evidence, not a guess: the third CI run printed "all checks
+    # passed" cleanly, then died with exit code 1 ~130ms later with zero
+    # further output - no traceback, nothing. That gap is a normal Python
+    # interpreter shutdown (raise SystemExit -> module/object teardown),
+    # and this class of "crashes only on exit, never mid-run" symptom is a
+    # known PySide6/Qt issue: QApplication's C++-owned widgets getting
+    # destroyed through Python's GC in an order Qt itself doesn't like.
+    # Every result this script produces is already printed and flushed by
+    # this point, so there is nothing left for a graceful shutdown to buy -
+    # skip it and exit at the OS level, bypassing whatever in Qt's/PySide6's
+    # teardown was crashing.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(_code)
