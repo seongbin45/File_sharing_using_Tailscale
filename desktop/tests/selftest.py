@@ -268,8 +268,11 @@ def test_pairing():
               listener.is_paired() and not listener.is_confirmed())
 
         registry = pairing.load_known_senders(known_path)
-        check("paired sender is recorded in known_senders.json",
-              registry.get("dev-abc", {}).get("device_name") == "sender-1", registry)
+        check("an unconfirmed pair does NOT yet write known_senders.json - "
+              "only a real matching /confirm should, so a pairing that "
+              "never completes can't later trigger a false silence-"
+              "detection warning for a sender that never really worked",
+              "dev-abc" not in registry, registry)
 
         # Exercise the real incoming -> settle -> unpack pipeline (not a file
         # dropped straight into unpack_dir) - _confirm_test_file() has to
@@ -299,6 +302,12 @@ def test_pairing():
               "this is what the wizard's receiver page waits for before letting "
               "the person close it and tear down the listener",
               listener.is_confirmed())
+
+        registry = pairing.load_known_senders(known_path)
+        check("paired sender IS recorded in known_senders.json once /confirm "
+              "actually matches - the registry write moved from pair-time to "
+              "confirm-time",
+              registry.get("dev-abc", {}).get("device_name") == "sender-1", registry)
 
         bad_resp = listener._handle_confirm({
             "confirm_token": payload["confirm_token"],
@@ -340,6 +349,67 @@ def test_pairing():
             check("an expired code is refused", False, "it paired")
         except pairing.PairingError as exc:
             check("an expired code is refused", "만료" in str(exc), str(exc))
+
+        section("pairing: validation-before-consume, idempotent retry, confirm expiry")
+        listener.regenerate()
+        try:
+            listener._handle_pair({"secret": listener._session.secret})
+            check("a /pair missing device_name/device_id is refused", False, "it paired")
+        except pairing.PairingError as exc:
+            check("a /pair missing device_name/device_id is refused",
+                  "정보가 없습니다" in str(exc), str(exc))
+        check("...and crucially does NOT consume the code - a real /pair "
+              "with the same secret right after still succeeds, instead of "
+              "the whole code being burned by one malformed request",
+              not listener._session.paired)
+
+        time.sleep(pairing.MIN_REQUEST_INTERVAL + 0.05)
+        first = listener._handle_pair({"secret": listener._session.secret,
+                                        "device_name": "z", "device_id": "dev-z"})
+        check("the real /pair right after succeeds, with a confirm_token",
+              bool(first.get("confirm_token")))
+
+        time.sleep(pairing.MIN_REQUEST_INTERVAL + 0.05)
+        repeat = listener._handle_pair({"secret": listener._session.secret,
+                                         "device_name": "z", "device_id": "dev-z"})
+        check("a repeat /pair from the SAME device_id on an already-used "
+              "code returns the identical cached response instead of "
+              "refusing - this is what lets a sender retry after a failed "
+              "test-transfer without the receiver having to issue a new "
+              "code",
+              repeat == first, (repeat, first))
+
+        time.sleep(pairing.MIN_REQUEST_INTERVAL + 0.05)
+        try:
+            listener._handle_pair({"secret": listener._session.secret,
+                                    "device_name": "other", "device_id": "dev-other"})
+            check("a DIFFERENT device_id against an already-used code is "
+                  "still refused - the idempotent retry doesn't weaken "
+                  "single-use for anyone but the device that paired",
+                  False, "it paired")
+        except pairing.PairingError:
+            check("a DIFFERENT device_id against an already-used code is "
+                  "still refused - the idempotent retry doesn't weaken "
+                  "single-use for anyone but the device that paired", True)
+
+        listener.regenerate()
+        time.sleep(pairing.MIN_REQUEST_INTERVAL + 0.05)
+        stale = listener._handle_pair({"secret": listener._session.secret,
+                                        "device_name": "z2", "device_id": "dev-z2"})
+        listener._session.created_at = time.time() - pairing.CODE_TTL_SECONDS - 1
+        check("is_expired() is true once a paired-but-unconfirmed session "
+              "passes its TTL - the receiver page uses this to offer the "
+              "새 코드 / 시험 없이 마침 escape hatches instead of waiting "
+              "forever on a sender that may never come back",
+              listener.is_expired())
+        try:
+            listener._handle_confirm({"confirm_token": stale["confirm_token"],
+                                       "test_name": "x", "expected_hash": "y"})
+            check("/confirm refuses once the code has expired, matching "
+                  "/pair's own existing expiry check", False, "it confirmed")
+        except pairing.PairingError as exc:
+            check("/confirm refuses once the code has expired, matching "
+                  "/pair's own existing expiry check", "만료" in str(exc), str(exc))
 
         listener.stop()
 

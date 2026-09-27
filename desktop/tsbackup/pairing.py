@@ -160,15 +160,18 @@ def load_known_senders(path: Path) -> dict:
     return _load_registry(path)
 
 
-def record_heartbeat(path: Path, device_id: str, interval_minutes=None) -> None:
-    """Update a known sender's last_seen when an ordinary scheduled transfer
-    actually arrives - distinct from _handle_pair()'s registry write, which
-    only ever fires once, at pairing time. Without this, overdue_senders()
-    would eventually flag every paired sender as overdue regardless of
-    whether it's still sending fine - the registry would only ever prove
-    "we once paired," not "still alive." No auth needed here: this reads
-    the receiver's own already-unpacked files (receiver.py's
-    Receiver._record_heartbeat()), not a network request.
+def record_heartbeat(path: Path, device_id: str, interval_minutes=None,
+                      device_name: str | None = None) -> None:
+    """Update a known sender's last_seen - both when an ordinary scheduled
+    transfer actually arrives (receiver.py's Receiver._record_heartbeat(),
+    no device_name available there, so the existing entry's name is kept)
+    and, first, when /confirm registers a newly-paired sender for the very
+    first time (device_name always given there). Without the ongoing calls,
+    overdue_senders() would eventually flag every paired sender as overdue
+    regardless of whether it's still sending fine - the registry would only
+    ever prove "we once paired," not "still alive." No auth needed for the
+    ongoing case: it reads the receiver's own already-unpacked files, not a
+    network request.
 
     A device_id the registry has never seen (e.g. a config that embeds one
     without having gone through /pair) is recorded fresh rather than
@@ -181,7 +184,10 @@ def record_heartbeat(path: Path, device_id: str, interval_minutes=None) -> None:
     entry = dict(registry.get(device_id, {}))
     entry["last_seen"] = now
     entry.setdefault("first_seen", now)
-    entry.setdefault("device_name", device_id)
+    if device_name:
+        entry["device_name"] = device_name
+    else:
+        entry.setdefault("device_name", device_id)
     if interval_minutes:
         entry["interval_minutes"] = interval_minutes
     registry[device_id] = entry
@@ -267,6 +273,16 @@ class _Session:
         self.confirm_token: str | None = None
         self.issued_token: str | None = None
         self.last_request_at = 0.0
+        # Set on the first successful /pair, so a repeat request from the
+        # same device (the sender retrying after a failed test-transfer)
+        # can be answered idempotently instead of being refused as "already
+        # used" - see _handle_pair(). Also carries what /confirm needs to
+        # register the sender into known_senders.json for the first time,
+        # since that write now happens at confirm-time, not pair-time.
+        self.paired_device_id: str | None = None
+        self.paired_response: dict | None = None
+        self.pending_device_name: str | None = None
+        self.pending_interval_minutes = None
 
     def expired(self) -> bool:
         return time.time() - self.created_at > CODE_TTL_SECONDS
@@ -385,6 +401,13 @@ class PairingListener:
         brand new code."""
         return bool(self._session and self._session.confirmed)
 
+    def is_expired(self) -> bool:
+        """Whether the current code's TTL has passed while still
+        unconfirmed - the wizard's receiver page uses this to show "새
+        코드를 만드십시오" instead of waiting on a sender that may never
+        come back, and to offer the "시험 없이 마침" escape hatch."""
+        return bool(self._session and self._session.expired() and not self._session.confirmed)
+
     # ---------------------------------------------------------- http hooks
 
     def _handle_pair(self, body: dict) -> dict:
@@ -401,27 +424,34 @@ class PairingListener:
         if body.get("secret") != session.secret:
             session.wrong_attempts += 1
             raise PairingError("코드가 일치하지 않습니다")
-        if session.paired:
-            raise PairingError("이미 사용된 코드입니다")
 
-        session.paired = True
-        session.confirm_token = secrets.token_hex(16)
-
+        # Validate the request body BEFORE consuming the code below - a
+        # malformed request (missing device_name/device_id) must not burn
+        # a one-time-use code that the sender never actually finished
+        # using.
         device_name = str(body.get("device_name", "")).strip()
         device_id = str(body.get("device_id", "")).strip()
         if not device_name or not device_id:
             raise PairingError("보내는 쪽 정보가 없습니다 (device_name/device_id)")
 
-        registry = _load_registry(self._known_senders_path)
-        existing = registry.get(device_id, {})
-        registry[device_id] = {
-            "device_name": device_name,
-            "interval_minutes": body.get("interval_minutes"),
-            "first_seen": existing.get("first_seen", now),
-            "last_seen": now,
-        }
-        _save_registry(self._known_senders_path, registry)
-        self._log(f"짝 등록: {device_name} ({device_id})")
+        if session.paired:
+            if session.paired_device_id == device_id:
+                # The same device retrying /pair - e.g. its test-transfer
+                # failed for an unrelated reason and it starts over. The
+                # secret already proved possession of the code once; a
+                # different device_id still gets refused below.
+                return session.paired_response
+            raise PairingError("이미 사용된 코드입니다")
+
+        session.paired = True
+        session.paired_device_id = device_id
+        session.confirm_token = secrets.token_hex(16)
+        # Stashed for _handle_confirm(): known_senders.json is only written
+        # once the test-transfer actually confirms, not merely on /pair -
+        # an unconfirmed pairing must not pollute silence-detection with a
+        # sender that never really started working.
+        session.pending_device_name = device_name
+        session.pending_interval_minutes = body.get("interval_minutes")
 
         r = self.cfg.receiver
         response: dict = {
@@ -436,12 +466,17 @@ class PairingListener:
         if str(body.get("transport_preference")) == "http":
             session.issued_token = secrets.token_hex(16)
             response["issued_token"] = session.issued_token
+
+        session.paired_response = response
+        self._log(f"짝 요청 수락: {device_name} ({device_id})")
         return response
 
     def _handle_confirm(self, body: dict) -> dict:
         session = self._session
         if session is None or not session.confirm_token:
             raise PairingError("짝 절차가 아직 끝나지 않았습니다")
+        if session.expired():
+            raise PairingError("코드가 만료되었습니다")
         if body.get("confirm_token") != session.confirm_token:
             raise PairingError("확인 토큰이 올바르지 않습니다")
         match = self._confirm_test_file(
@@ -449,6 +484,11 @@ class PairingListener:
         )
         if match:
             session.confirmed = True
+            record_heartbeat(
+                self._known_senders_path, session.paired_device_id,
+                session.pending_interval_minutes, session.pending_device_name,
+            )
+            self._log(f"짝 등록: {session.pending_device_name} ({session.paired_device_id})")
         return {"match": match}
 
     def _confirm_test_file(self, test_name: str, expected_hash: str) -> bool:

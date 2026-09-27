@@ -146,11 +146,15 @@ class SetupWizard(QDialog):
         lay.addWidget(regen)
         lay.addStretch(1)
 
+        self.receiver_finish_anyway = QPushButton("시험 없이 마침")
+        self.receiver_finish_anyway.setVisible(False)
+        self.receiver_finish_anyway.clicked.connect(self._finish_without_confirm)
         self.receiver_finish = QPushButton("마침")
         self.receiver_finish.setEnabled(False)
         self.receiver_finish.clicked.connect(self.accept)
         row = QHBoxLayout()
         row.addStretch(1)
+        row.addWidget(self.receiver_finish_anyway)
         row.addWidget(self.receiver_finish)
         lay.addLayout(row)
         return w
@@ -184,6 +188,7 @@ class SetupWizard(QDialog):
         self.code_label.setText(self._listener.regenerate())
         self.pair_status.setText("대기 중...")
         self.receiver_finish.setEnabled(False)
+        self.receiver_finish_anyway.setVisible(False)
         if not self._poll_timer.isActive():
             self._poll_timer.start(1000)
 
@@ -191,6 +196,21 @@ class SetupWizard(QDialog):
         text = self.code_label.text()
         if text:
             QApplication.clipboard().setText(text)
+
+    def _finish_without_confirm(self) -> None:
+        """Escape hatch for a sender that never completes (walked away,
+        uninstalled, network dead for good) - without this the receiver
+        would be stuck on a code that only offers "새 코드", with no way to
+        just leave the wizard. Deliberately secondary to "마침": needs an
+        explicit warning, and finishes regardless of is_confirmed()."""
+        resp = QMessageBox.warning(
+            self, "확인 없이 마치기",
+            "보내는 쪽의 시험 전송이 확인되지 않았습니다. 그래도 끝내시겠습니까?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if resp == QMessageBox.StandardButton.Yes:
+            self.accept()
 
     def _poll_paired(self) -> None:
         if not self._listener:
@@ -205,6 +225,11 @@ class SetupWizard(QDialog):
         if self._listener.is_confirmed():
             self.pair_status.setText("시험 전송까지 확인되었습니다. 이제 닫아도 됩니다.")
             self.receiver_finish.setEnabled(True)
+            self.receiver_finish_anyway.setVisible(False)
+            self._poll_timer.stop()
+        elif self._listener.is_expired():
+            self.pair_status.setText("코드가 만료되었습니다 - 새 코드를 만드십시오")
+            self.receiver_finish_anyway.setVisible(True)
             self._poll_timer.stop()
         elif self._listener.is_paired():
             self.pair_status.setText("연결됨 - 보내는 쪽의 시험 전송을 기다리는 중...")

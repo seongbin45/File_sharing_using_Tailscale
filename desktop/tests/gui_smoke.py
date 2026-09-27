@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import sys
 import tempfile
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
@@ -33,7 +34,7 @@ if hasattr(sys.stderr, "reconfigure"):
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QDialog, QMessageBox  # noqa: E402
 
 from app.main_window import MainWindow  # noqa: E402
 from app.settings_dialog import SettingsDialog  # noqa: E402
@@ -220,6 +221,75 @@ def test_wizard_receiver_page(app: QApplication, root: Path) -> None:
         wiz._cleanup()
 
 
+def test_wizard_receiver_expiry_escape_hatch(app: QApplication, root: Path) -> None:
+    section("SetupWizard receiver page: expiry messaging + 시험 없이 마침 escape hatch")
+    with _no_real_bind("100.90.1.4"):
+        import tsbackup.pairing as pairing_module
+
+        cfg = AppConfig()
+        wiz = SetupWizard(cfg)
+        # A child widget's isVisible() only reflects the whole ancestor
+        # chain once the top-level window is actually shown, so show()
+        # first or the visibility checks below are meaningless (see the
+        # same note on SettingsDialog's test above).
+        wiz.show()
+        wiz.role_receiver.setChecked(True)
+        wiz._role_next()
+
+        check("escape hatch is hidden while a code is still fresh",
+              not wiz.receiver_finish_anyway.isVisible())
+
+        wiz._listener._session.created_at = (
+            time.time() - pairing_module.CODE_TTL_SECONDS - 1)
+        wiz._poll_paired()
+        check("status shows expiry once the code's TTL passes unconfirmed",
+              "만료" in wiz.pair_status.text(), wiz.pair_status.text())
+        check("시험 없이 마침 escape hatch becomes visible on expiry",
+              wiz.receiver_finish_anyway.isVisible())
+
+        with patch("app.wizard.QMessageBox.warning",
+                   return_value=QMessageBox.StandardButton.No):
+            wiz._finish_without_confirm()
+        check("declining the warning does not close the wizard",
+              wiz.result() != QDialog.DialogCode.Accepted)
+
+        with patch("app.wizard.QMessageBox.warning",
+                   return_value=QMessageBox.StandardButton.Yes):
+            wiz._finish_without_confirm()
+        check("accepting the warning finishes the wizard despite no confirm",
+              wiz.result() == QDialog.DialogCode.Accepted)
+
+
+def test_wizard_close_routes_through_reject(app: QApplication, root: Path) -> None:
+    section("SetupWizard: closing the window routes through reject() -> _cleanup()")
+    with _no_real_bind("100.90.1.6"):
+        cfg = AppConfig()
+        wiz = SetupWizard(cfg)
+        # QDialog.closeEvent()'s own default implementation only calls
+        # reject() when isVisible() is true at close time - a dialog that
+        # was never shown reports Rejected anyway (that's just the
+        # un-set default result()), which would make this test pass
+        # vacuously without actually exercising the close path. show()
+        # first so the check below proves something real.
+        wiz.show()
+        wiz.role_receiver.setChecked(True)
+        wiz._role_next()
+        check("listener is bound while the wizard is open",
+              wiz._listener is not None)
+
+        # SetupWizard doesn't override closeEvent, so this proves Qt's own
+        # default (QDialog.closeEvent calls reject() while visible) is
+        # really what's wired up - the same path Esc and the title bar's
+        # X button take - rather than assuming it without a test.
+        wiz.close()
+        check("closing the window rejects the dialog rather than silently "
+              "hiding it (this is also the X-button/Esc path, since "
+              "SetupWizard adds no closeEvent override of its own)",
+              wiz.result() == QDialog.DialogCode.Rejected)
+        check("...and tears down the pairing listener, not just the widget",
+              wiz._listener is None)
+
+
 def test_pairing_code_dialog(app: QApplication, root: Path) -> None:
     section("PairingCodeDialog: copy button (main_window.py)")
     from app.main_window import PairingCodeDialog
@@ -245,6 +315,8 @@ def main() -> int:
         test_tray_signal_wiring(app, root)
         test_wizard(app, root)
         test_wizard_receiver_page(app, root)
+        test_wizard_receiver_expiry_escape_hatch(app, root)
+        test_wizard_close_routes_through_reject(app, root)
         test_pairing_code_dialog(app, root)
 
     print()

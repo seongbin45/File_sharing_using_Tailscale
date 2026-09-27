@@ -66,6 +66,18 @@ Name: "startupicon"; Description: "Windows 시작 시 자동 실행 (트레이�
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,TsBackup}"; Flags: nowait postinstall skipifsilent
+; Scoped inbound allow for the pairing listener (tsbackup/pairing.py's
+; PAIRING_PORT - keep these in sync) - restricted to Tailscale's own CGNAT
+; range and this app's exe, never a blanket allow. Needs admin rights to
+; manage firewall rules at all, so this only runs - and only eliminates
+; the first-run Windows Firewall prompt - on a per-machine (admin) install.
+; A per-user install (this installer's other supported mode, since
+; PrivilegesRequired is "lowest") still shows that prompt on first bind;
+; that's an unavoidable Windows constraint, not a bug in this rule.
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""TsBackup Pairing"" dir=in action=allow protocol=TCP localport=8781 remoteip=100.64.0.0/10 program=""{app}\{#MyAppExeName}"" enable=yes"; Flags: runhidden; Check: IsAdminInstallMode
+
+[UninstallRun]
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""TsBackup Pairing"""; Flags: runhidden; Check: IsAdminInstallMode
 
 ; Deliberately no [UninstallDelete]: uninstall only removes what's listed
 ; under [Files]/[Icons] above. The user's %LOCALAPPDATA%\TsBackup\
