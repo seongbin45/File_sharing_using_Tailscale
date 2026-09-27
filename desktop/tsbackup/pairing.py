@@ -263,6 +263,7 @@ class _Session:
         self.created_at = time.time()
         self.wrong_attempts = 0
         self.paired = False
+        self.confirmed = False
         self.confirm_token: str | None = None
         self.issued_token: str | None = None
         self.last_request_at = 0.0
@@ -370,6 +371,20 @@ class PairingListener:
         saying "대기 중" and let the person move on."""
         return bool(self._session and self._session.paired)
 
+    def is_confirmed(self) -> bool:
+        """Whether the sender's mandatory test-transfer has actually round-
+        tripped through /confirm - not just that /pair succeeded. The
+        wizard's receiver page must not treat setup as finished (and enable
+        closing the wizard, which stops this listener) before this is true:
+        /pair succeeding only means the code was accepted, the test-
+        transfer itself still needs this listener alive to answer /confirm
+        afterward. Enabling "마침" on is_paired() alone let the receiver
+        finish and tear down the listener while the sender's mandatory
+        test-transfer was still in flight, stranding it with no listener
+        to answer - the exact failure that forced starting over from a
+        brand new code."""
+        return bool(self._session and self._session.confirmed)
+
     # ---------------------------------------------------------- http hooks
 
     def _handle_pair(self, body: dict) -> dict:
@@ -429,9 +444,12 @@ class PairingListener:
             raise PairingError("짝 절차가 아직 끝나지 않았습니다")
         if body.get("confirm_token") != session.confirm_token:
             raise PairingError("확인 토큰이 올바르지 않습니다")
-        return {"match": self._confirm_test_file(
+        match = self._confirm_test_file(
             str(body.get("test_name", "")), str(body.get("expected_hash", ""))
-        )}
+        )
+        if match:
+            session.confirmed = True
+        return {"match": match}
 
     def _confirm_test_file(self, test_name: str, expected_hash: str) -> bool:
         from .receiver import SETTLE_SECONDS, Receiver

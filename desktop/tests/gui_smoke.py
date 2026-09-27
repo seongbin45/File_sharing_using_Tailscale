@@ -22,7 +22,9 @@ from __future__ import annotations
 
 import sys
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
+from unittest.mock import patch
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -164,6 +166,75 @@ def test_wizard(app: QApplication, root: Path) -> None:
     wiz._cleanup()
 
 
+@contextmanager
+def _no_real_bind(fake_ip: str):
+    """No real Tailscale interface in this sandbox to bind to - patch out the
+    socket bind while still exercising the code-generation and gating logic
+    real hardware would drive identically. Shared by every test that
+    constructs a PairingListener, so the bypass can't be forgotten on one
+    of them (as `test_pairing_code_dialog` once was)."""
+    import tsbackup.pairing as pairing_module
+
+    def _fake_start(self, ip):
+        self._tailscale_ip = ip
+        return self.regenerate()
+
+    with patch.object(pairing_module.PairingListener, "start", _fake_start), \
+         patch.object(pairing_module, "local_tailscale_ip", lambda: fake_ip):
+        yield
+
+
+def test_wizard_receiver_page(app: QApplication, root: Path) -> None:
+    section("SetupWizard receiver page: copy button, paired-vs-confirmed gating")
+    with _no_real_bind("100.90.1.2"):
+        cfg = AppConfig()
+        wiz = SetupWizard(cfg)
+        wiz.role_receiver.setChecked(True)
+        wiz._role_next()
+        check("a code is shown on the receiver page", bool(wiz.code_label.text()))
+        check("마침 starts disabled - pairing hasn't happened yet",
+              not wiz.receiver_finish.isEnabled())
+
+        wiz._copy_receiver_code()
+        check("복사 puts the shown code on the clipboard",
+              app.clipboard().text() == wiz.code_label.text())
+
+        # Regression guard for the real bug: /pair succeeding alone must
+        # NOT enable 마침 - only after the sender's mandatory test-transfer
+        # has actually confirmed. Enabling it on is_paired() alone let the
+        # receiver close the wizard (tearing down the listener) while the
+        # sender's test-transfer was still in flight, stranding it and
+        # forcing the whole pairing to be redone from a fresh code.
+        wiz._listener._session.paired = True
+        wiz._poll_paired()
+        check("마침 stays disabled when paired but not yet confirmed",
+              not wiz.receiver_finish.isEnabled())
+        check("status reflects waiting for the sender's test-transfer",
+              "기다리는" in wiz.pair_status.text(), wiz.pair_status.text())
+
+        wiz._listener._session.confirmed = True
+        wiz._poll_paired()
+        check("마침 enables only once the test-transfer is actually confirmed",
+              wiz.receiver_finish.isEnabled())
+
+        wiz._cleanup()
+
+
+def test_pairing_code_dialog(app: QApplication, root: Path) -> None:
+    section("PairingCodeDialog: copy button (main_window.py)")
+    from app.main_window import PairingCodeDialog
+
+    with _no_real_bind("100.90.1.3"):
+        cfg = AppConfig()
+        dlg = PairingCodeDialog(cfg)
+        check("a code is shown", bool(dlg.code_label.text()) and dlg.code_label.text() != "...")
+        dlg._copy_code()
+        check("복사 puts the shown code on the clipboard",
+              app.clipboard().text() == dlg.code_label.text())
+        if dlg._listener:
+            dlg._listener.stop()
+
+
 def main() -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     with tempfile.TemporaryDirectory() as tmp:
@@ -173,6 +244,8 @@ def main() -> int:
         test_settings_dialog(app, root)
         test_tray_signal_wiring(app, root)
         test_wizard(app, root)
+        test_wizard_receiver_page(app, root)
+        test_pairing_code_dialog(app, root)
 
     print()
     if FAILURES:

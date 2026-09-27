@@ -23,9 +23,9 @@ from pathlib import Path
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
-    QDialog, QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
-    QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
-    QVBoxLayout, QWidget,
+    QApplication, QDialog, QFrame, QHBoxLayout, QLabel, QListWidget,
+    QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar,
+    QPushButton, QVBoxLayout, QWidget,
 )
 
 from tsbackup import pairing
@@ -82,11 +82,17 @@ class PairingCodeDialog(QDialog):
         self._listener: pairing.PairingListener | None = None
 
         lay = QVBoxLayout(self)
+        code_row = QHBoxLayout()
         self.code_label = QLabel("...")
         self.code_label.setStyleSheet(
             "font-family: 'Cascadia Mono','D2Coding',Consolas,monospace; "
             "font-size: 24px; font-weight: 700;")
-        lay.addWidget(self.code_label)
+        code_row.addWidget(self.code_label)
+        copy_btn = QPushButton("복사")
+        copy_btn.clicked.connect(self._copy_code)
+        code_row.addWidget(copy_btn)
+        code_row.addStretch(1)
+        lay.addLayout(code_row)
         lay.addWidget(QLabel("tailnet 안에서만 유효 · 15분 후 만료 · 한 번 쓰면 소멸"))
         self.pair_status = QLabel("대기 중...")
         lay.addWidget(self.pair_status)
@@ -123,10 +129,25 @@ class PairingCodeDialog(QDialog):
             if not self._poll.isActive():
                 self._poll.start(1000)
 
+    def _copy_code(self) -> None:
+        text = self.code_label.text()
+        if text and text != "...":
+            QApplication.clipboard().setText(text)
+
     def _poll_paired(self) -> None:
-        if self._listener and self._listener.is_paired():
-            self.pair_status.setText("연결되었습니다.")
+        if not self._listener:
+            return
+        # Same reasoning as the wizard's receiver page: is_paired() alone
+        # only means the code was accepted - the sender's mandatory test-
+        # transfer still needs this listener alive to answer /confirm. This
+        # dialog's "닫기" isn't gated on it (there's no mandatory-wizard
+        # block here), but the status text should say so accurately rather
+        # than implying "connected" already means "done."
+        if self._listener.is_confirmed():
+            self.pair_status.setText("시험 전송까지 확인되었습니다.")
             self._poll.stop()
+        elif self._listener.is_paired():
+            self.pair_status.setText("연결됨 - 보내는 쪽의 시험 전송을 기다리는 중...")
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt override)
         self._poll.stop()

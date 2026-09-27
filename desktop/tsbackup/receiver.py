@@ -19,6 +19,7 @@ opened mid-transfer.
 from __future__ import annotations
 
 import json
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -52,6 +53,7 @@ class Receiver:
     def scan_once(self) -> int:
         """Unpack any settled archives in the incoming directory. Returns how
         many were unpacked this pass."""
+        self._pull_taildrop()
         incoming = Path(self.cfg.receiver.incoming_dir)
         if not incoming.is_dir():
             return 0
@@ -68,6 +70,32 @@ class Receiver:
                 done += 1
             self._seen.add(path.name)
         return done
+
+    def _pull_taildrop(self) -> None:
+        """Actively pull any pending Taildrop files into incoming_dir.
+
+        The Tailscale GUI client itself only ever saves received files to a
+        fixed, non-configurable location (Windows: %USERPROFILE%\\Downloads) -
+        it never writes into incoming_dir on its own, so passively polling
+        that directory misses every taildrop arrival. `tailscale file get`
+        is the CLI mechanism that actively claims pending files into a
+        directory we choose; it's a no-op when nothing is pending, so it's
+        safe to call on every scan pass.
+        """
+        from .transports.taildrop import tailscale_binary
+
+        binary = tailscale_binary()
+        if not binary:
+            return
+        incoming = Path(self.cfg.receiver.incoming_dir)
+        incoming.mkdir(parents=True, exist_ok=True)
+        try:
+            subprocess.run(
+                [binary, "file", "get", "--wait=false", "--conflict=skip", str(incoming)],
+                capture_output=True, text=True, timeout=30,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            self.log(f"taildrop 수신 확인 실패: {exc}")
 
     def _settled(self, path: Path) -> bool:
         try:

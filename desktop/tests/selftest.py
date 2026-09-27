@@ -263,6 +263,9 @@ def test_pairing():
         check("pair response carries the receiver's incoming_dir",
               payload.get("incoming_dir") == str(incoming))
         check("pair response carries a confirm_token", bool(payload.get("confirm_token")))
+        check("is_paired() is true right after /pair, but is_confirmed() is not yet - "
+              "the mandatory test-transfer still needs the listener alive to confirm",
+              listener.is_paired() and not listener.is_confirmed())
 
         registry = pairing.load_known_senders(known_path)
         check("paired sender is recorded in known_senders.json",
@@ -292,6 +295,10 @@ def test_pairing():
               ok_resp.get("match") is True)
         check("archive was actually unpacked, not just hash-compared in place",
               any(unpack.rglob("pair_test.bin")))
+        check("is_confirmed() becomes true only after a real matching /confirm - "
+              "this is what the wizard's receiver page waits for before letting "
+              "the person close it and tear down the listener",
+              listener.is_confirmed())
 
         bad_resp = listener._handle_confirm({
             "confirm_token": payload["confirm_token"],
@@ -720,6 +727,33 @@ def test_receiver_unpack():
         section("half-written .part is ignored")
         (incoming / "PycharmProjects_2099_01_01_00_00.7z.part").write_bytes(b"partial")
         check("no crash on .part", receiver.scan_once() == 0)
+
+        section("taildrop pull (tailscale file get) - receiver.py's _pull_taildrop")
+        from unittest.mock import patch
+
+        with patch("tsbackup.transports.taildrop.tailscale_binary", return_value=None):
+            ok = True
+            try:
+                receiver.scan_once()
+            except Exception:  # noqa: BLE001
+                ok = False
+            check("no tailscale binary found -> scan_once() still runs cleanly "
+                  "(this is the normal case for sftp-only receivers, and this "
+                  "sandbox, which has no tailscale install at all)", ok)
+
+        with patch("tsbackup.transports.taildrop.tailscale_binary", return_value="tailscale"), \
+             patch("tsbackup.receiver.subprocess.run") as run:
+            receiver.scan_once()
+            check("tailscale binary found -> `tailscale file get` is invoked "
+                  "on every scan pass, actively pulling from Taildrop's own "
+                  "fixed save location instead of only watching incoming_dir "
+                  "(which Taildrop itself never writes into)",
+                  run.called)
+            args = run.call_args[0][0]
+            check("invoked with --wait=false so a poll never blocks on it",
+                  "--wait=false" in args, args)
+            check("targets receiver.incoming_dir, not Taildrop's own default",
+                  args[-1] == str(incoming), args)
 
 
 def test_transport_registry():

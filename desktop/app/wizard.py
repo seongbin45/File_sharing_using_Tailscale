@@ -20,9 +20,9 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
-    QMessageBox, QPushButton, QRadioButton, QStackedWidget, QVBoxLayout,
-    QWidget,
+    QApplication, QComboBox, QDialog, QFileDialog, QHBoxLayout, QLabel,
+    QLineEdit, QMessageBox, QPushButton, QRadioButton, QStackedWidget,
+    QVBoxLayout, QWidget,
 )
 
 from tsbackup import pairing
@@ -125,11 +125,17 @@ class SetupWizard(QDialog):
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.addWidget(QLabel("보내는 쪽에 이 코드를 입력하십시오"))
+        code_row = QHBoxLayout()
         self.code_label = QLabel("")
         self.code_label.setStyleSheet(
             "font-family: 'Cascadia Mono','D2Coding',Consolas,monospace; "
             "font-size: 26px; font-weight: 700;")
-        lay.addWidget(self.code_label)
+        code_row.addWidget(self.code_label)
+        copy_btn = QPushButton("복사")
+        copy_btn.clicked.connect(self._copy_receiver_code)
+        code_row.addWidget(copy_btn)
+        code_row.addStretch(1)
+        lay.addLayout(code_row)
         lay.addWidget(QLabel("tailnet 안에서만 유효 · 15분 후 만료 · 한 번 쓰면 소멸"))
 
         self.pair_status = QLabel("대기 중...")
@@ -181,12 +187,27 @@ class SetupWizard(QDialog):
         if not self._poll_timer.isActive():
             self._poll_timer.start(1000)
 
+    def _copy_receiver_code(self) -> None:
+        text = self.code_label.text()
+        if text:
+            QApplication.clipboard().setText(text)
+
     def _poll_paired(self) -> None:
-        if not self._listener or not self._listener.is_paired():
+        if not self._listener:
             return
-        self.pair_status.setText("연결되었습니다.")
-        self.receiver_finish.setEnabled(True)
-        self._poll_timer.stop()
+        # is_paired() alone is not "done": the sender's mandatory test-
+        # transfer still needs this listener alive to answer /confirm
+        # afterward. Enabling "마침" (and letting the receiver close the
+        # wizard, which stops the listener) before that round trip lands
+        # strands the sender - the exact failure that forced starting
+        # over with a brand new code. Keep waiting, and say so, until
+        # is_confirmed() is true.
+        if self._listener.is_confirmed():
+            self.pair_status.setText("시험 전송까지 확인되었습니다. 이제 닫아도 됩니다.")
+            self.receiver_finish.setEnabled(True)
+            self._poll_timer.stop()
+        elif self._listener.is_paired():
+            self.pair_status.setText("연결됨 - 보내는 쪽의 시험 전송을 기다리는 중...")
 
     # -------------------------------------------------------- sender page
 
