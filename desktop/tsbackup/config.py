@@ -124,8 +124,20 @@ class AppConfig:
     # so upgrading never sends an already-working install through the
     # wizard again.
     onboarded: bool = False
+    # Identifies this installation to a receiver's known_senders registry
+    # (see tsbackup/pairing.py) regardless of which role this machine plays -
+    # a device name alone can collide or change, this doesn't. Empty until
+    # first needed; ensure_device_id() fills it in and the caller saves.
+    device_id: str = ""
     sender: SenderConfig = field(default_factory=SenderConfig)
     receiver: ReceiverConfig = field(default_factory=ReceiverConfig)
+
+    def ensure_device_id(self) -> str:
+        if not self.device_id:
+            import secrets
+
+            self.device_id = secrets.token_hex(8)
+        return self.device_id
 
     # ---------------------------------------------------------------- io
 
@@ -151,6 +163,7 @@ class AppConfig:
         cfg.minimize_to_tray = bool(raw.get("minimize_to_tray", cfg.minimize_to_tray))
         cfg.autostart_engine = bool(raw.get("autostart_engine", cfg.autostart_engine))
         cfg.onboarded = bool(raw.get("onboarded", cfg.onboarded))
+        cfg.device_id = raw.get("device_id", cfg.device_id)
         raw_sender = raw.get("sender", {})
         raw_receiver = raw.get("receiver", {})
         cfg.sender = _fill(SenderConfig, raw_sender)

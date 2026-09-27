@@ -195,6 +195,135 @@ def test_retry_state():
           next_retry_state(True, 0) == ("reset", 0))
 
 
+def test_pairing():
+    section("pairing code encode/decode")
+    from tsbackup import pairing
+
+    for ip, secret in [
+        ("100.64.0.0", 0),
+        ("100.127.255.255", (1 << pairing.SECRET_BITS) - 1),
+        ("100.84.12.31", 12345),
+    ]:
+        code = pairing.pack_code(ip, secret)
+        back_ip, back_secret = pairing.unpack_code(code)
+        check(f"round-trip {ip}/{secret}", (back_ip, back_secret) == (ip, secret))
+        check(f"code is {pairing.CODE_CHARS} characters (plus one dash)",
+              len(code) == pairing.CODE_CHARS + 1, code)
+
+    try:
+        pairing.pack_code("192.168.1.1", 1)
+        check("a non-CGNAT ip is refused", False, "it packed anyway")
+    except pairing.PairingError:
+        check("a non-CGNAT ip is refused", True)
+
+    try:
+        pairing.unpack_code("TOO-SHORT")
+        check("a wrong-length code is refused", False, "it decoded anyway")
+    except pairing.PairingError:
+        check("a wrong-length code is refused", True)
+
+    section("pairing exchange (listener + sender-side handlers)")
+    import hashlib
+    import tempfile
+    import time
+    from pathlib import Path
+
+    from tsbackup.config import AppConfig
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        incoming = root / "incoming"
+        incoming.mkdir()
+        unpack = root / "unpack"
+        unpack.mkdir()
+        known_path = root / "known_senders.json"
+
+        cfg = AppConfig()
+        cfg.role = "receiver"
+        cfg.receiver.incoming_dir = str(incoming)
+        cfg.receiver.unpack_dir = str(unpack)
+
+        listener = pairing.PairingListener(cfg, known_path, log=lambda _m: None)
+        # No real Tailscale interface in this sandbox to bind to - exercise
+        # the handler logic directly (what do_POST calls into) rather than
+        # a real socket; a real bind is proven manually against a live
+        # Tailscale-connected machine, per the plan's Phase 3 manual check.
+        listener._tailscale_ip = "100.90.1.2"
+        code = listener.regenerate()
+        check("generated code decodes to the listener's own ip",
+              pairing.unpack_code(code)[0] == "100.90.1.2")
+
+        payload = listener._handle_pair({
+            "secret": listener._session.secret,
+            "device_name": "sender-1",
+            "device_id": "dev-abc",
+            "interval_minutes": 60,
+            "transport_preference": "taildrop",
+        })
+        check("pair response carries the receiver's incoming_dir",
+              payload.get("incoming_dir") == str(incoming))
+        check("pair response carries a confirm_token", bool(payload.get("confirm_token")))
+
+        registry = pairing.load_known_senders(known_path)
+        check("paired sender is recorded in known_senders.json",
+              registry.get("dev-abc", {}).get("device_name") == "sender-1", registry)
+
+        test_file = unpack / "pair_test.bin"
+        content = b"pairing self-test payload"
+        test_file.write_bytes(content)
+        digest = hashlib.sha256(content).hexdigest()
+
+        ok_resp = listener._handle_confirm({
+            "confirm_token": payload["confirm_token"],
+            "test_name": "pair_test.bin",
+            "expected_hash": digest,
+        })
+        check("confirm reports a match for the real file", ok_resp.get("match") is True)
+
+        bad_resp = listener._handle_confirm({
+            "confirm_token": payload["confirm_token"],
+            "test_name": "pair_test.bin",
+            "expected_hash": "0" * 64,
+        })
+        check("confirm reports no match for a wrong hash", bad_resp.get("match") is False)
+
+        section("pairing: single-use, wrong-attempt lockout, expiry")
+        try:
+            listener._handle_pair({"secret": listener._session.secret,
+                                    "device_name": "x", "device_id": "y"})
+            check("a used code is refused on a second /pair", False, "it paired again")
+        except pairing.PairingError:
+            check("a used code is refused on a second /pair", True)
+
+        listener.regenerate()
+        for _ in range(pairing.MAX_WRONG_ATTEMPTS):
+            time.sleep(pairing.MIN_REQUEST_INTERVAL + 0.05)
+            try:
+                listener._handle_pair({"secret": -1, "device_name": "x", "device_id": "y"})
+            except pairing.PairingError:
+                pass
+        check(f"{pairing.MAX_WRONG_ATTEMPTS} wrong attempts increments the counter",
+              listener._session.wrong_attempts == pairing.MAX_WRONG_ATTEMPTS)
+        time.sleep(pairing.MIN_REQUEST_INTERVAL + 0.05)
+        try:
+            listener._handle_pair({"secret": listener._session.secret,
+                                    "device_name": "x", "device_id": "y"})
+            check("the code is locked out even with the correct secret", False, "it paired")
+        except pairing.PairingError as exc:
+            check("the code is locked out even with the correct secret", "폐기" in str(exc), str(exc))
+
+        listener.regenerate()
+        listener._session.created_at = time.time() - pairing.CODE_TTL_SECONDS - 1
+        try:
+            listener._handle_pair({"secret": listener._session.secret,
+                                    "device_name": "x", "device_id": "y"})
+            check("an expired code is refused", False, "it paired")
+        except pairing.PairingError as exc:
+            check("an expired code is refused", "만료" in str(exc), str(exc))
+
+        listener.stop()
+
+
 def test_hostkeys():
     section("host key fingerprint (tsbackup/hostkeys.py)")
     import paramiko
@@ -376,6 +505,7 @@ if __name__ == "__main__":
     test_config_roundtrip()
     test_config_migrations()
     test_retry_state()
+    test_pairing()
     test_hostkeys()
     test_archiver_and_prune()
     test_progress_and_cancel()
