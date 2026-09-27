@@ -79,7 +79,7 @@ class Receiver:
         self._sizes[path.name] = (size, now)
         if prev is None or prev[0] != size:
             return False
-        return (now - prev[1]) >= 0  # unchanged since last poll; poll gap ~5s
+        return (now - prev[1]) >= SETTLE_SECONDS
 
     def _unpack(self, path: Path) -> bool:
         stamp = _stamp_of(path.name)

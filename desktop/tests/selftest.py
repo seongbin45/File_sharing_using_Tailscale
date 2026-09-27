@@ -34,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tsbackup import archiver, engine_core  # noqa: E402
 from tsbackup.config import AppConfig, SenderConfig  # noqa: E402
-from tsbackup.receiver import Receiver  # noqa: E402
+from tsbackup.receiver import SETTLE_SECONDS, Receiver  # noqa: E402
 from tsbackup.transports import base  # noqa: E402
 
 FAILURES: list[str] = []
@@ -390,7 +390,7 @@ def test_heartbeat_on_real_arrival():
         try:
             receiver = Receiver(rcfg, lambda _l: None)
             receiver.scan_once()
-            time.sleep(0.05)
+            time.sleep(SETTLE_SECONDS + 0.5)
             receiver.scan_once()
         finally:
             receiver_module.config_dir = real_config_dir
@@ -436,7 +436,7 @@ def test_heartbeat_on_real_arrival():
         try:
             receiver_unpaired = Receiver(rcfg2, lambda _l: None)
             receiver_unpaired.scan_once()
-            time.sleep(0.05)
+            time.sleep(SETTLE_SECONDS + 0.5)
             receiver_unpaired.scan_once()
         finally:
             receiver_module.config_dir = real_config_dir
@@ -702,9 +702,11 @@ def test_receiver_unpack():
         rcfg.receiver.delete_after_unpack = True
         receiver = Receiver(rcfg, lambda _l: None)
 
-        # first scan records the size; a settled file unpacks on the next scan
+        # first scan records the size; a settled file unpacks on the next
+        # scan, once real time (not just a repeated poll) has passed the
+        # settle window - see receiver.py's _settled().
         receiver.scan_once()
-        time.sleep(0.05)
+        time.sleep(SETTLE_SECONDS + 0.5)
         done = receiver.scan_once()
         check("one archive unpacked", done == 1, done)
         folders = list(unpack.glob("PycharmProjects_*"))
