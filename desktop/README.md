@@ -148,5 +148,17 @@ python -m tests.selftest
 압축·명명·보관(지우고 새로 압축)·전송 선택·fallback·수신 압축 해제·재시도/백오프
 결정·짝 코드 인코딩과 교환·침묵 감지·호스트 키 지문을 **실제로 돌려서** 확인합니다
 (Qt·네트워크 없이 - 짝 코드의 HTTP 왕복도 실제 소켓으로 검증하되 Tailscale 인터페이스
-대신 loopback 을 씁니다). 무엇이 검증됐고 무엇이 아닌지는
-[../docs/VERIFICATION.md](../docs/VERIFICATION.md) 15절.
+대신 loopback 을 씁니다).
+
+```cmd
+python -m tests.gui_smoke
+```
+
+위 셀프테스트가 다루지 않는 GUI 쪽 — `MainWindow`(양쪽 역할)·`SettingsDialog`·
+`Tray`·`SetupWizard` 를 실제로 만들어 배선을 확인합니다(역할 전환 재구성, 설정의
+고급 섹션 접기, 트레이의 실패 알림 아이콘 상태, 마법사의 연결 불가 코드 처리).
+CI 도 빌드 전에 이 순서로 돌립니다. 화면이 없는 환경(리눅스 CI, 이 저장소의
+개발 샌드박스)에서는 먼저 `set QT_QPA_PLATFORM=offscreen`(cmd) 또는
+`$env:QT_QPA_PLATFORM="offscreen"`(PowerShell).
+
+무엇이 검증됐고 무엇이 아닌지는 [../docs/VERIFICATION.md](../docs/VERIFICATION.md) 15절.
