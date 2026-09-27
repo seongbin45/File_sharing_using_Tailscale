@@ -268,17 +268,30 @@ def test_pairing():
         check("paired sender is recorded in known_senders.json",
               registry.get("dev-abc", {}).get("device_name") == "sender-1", registry)
 
-        test_file = unpack / "pair_test.bin"
+        # Exercise the real incoming -> settle -> unpack pipeline (not a file
+        # dropped straight into unpack_dir) - _confirm_test_file() has to
+        # scan twice on the same Receiver instance for scan_once()'s settle
+        # check to ever unpack anything (a single call on a fresh instance
+        # has no prior size to compare against and always skips).
         content = b"pairing self-test payload"
-        test_file.write_bytes(content)
         digest = hashlib.sha256(content).hexdigest()
+        archive_path = incoming / "PycharmProjects_2026_01_01_00_00.7z"
+        import py7zr
+        probe_src = root / "probe_src"
+        probe_src.mkdir()
+        (probe_src / "pair_test.bin").write_bytes(content)
+        with py7zr.SevenZipFile(archive_path, "w") as archive:
+            archive.writeall(probe_src, "PycharmProjects")
 
         ok_resp = listener._handle_confirm({
             "confirm_token": payload["confirm_token"],
             "test_name": "pair_test.bin",
             "expected_hash": digest,
         })
-        check("confirm reports a match for the real file", ok_resp.get("match") is True)
+        check("confirm unpacks the real archive and matches the test file",
+              ok_resp.get("match") is True)
+        check("archive was actually unpacked, not just hash-compared in place",
+              any(unpack.rglob("pair_test.bin")))
 
         bad_resp = listener._handle_confirm({
             "confirm_token": payload["confirm_token"],

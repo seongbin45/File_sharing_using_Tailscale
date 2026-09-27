@@ -379,7 +379,17 @@ class PairingListener:
 
         if not test_name or not expected_hash:
             return False
-        Receiver(self.cfg, self._log).scan_once()
+        # Receiver.scan_once() only unpacks a file once it has seen its size
+        # twice in a row unchanged - a single call on a freshly-constructed
+        # Receiver never unpacks anything, since it has no prior size
+        # recorded yet to compare against. By the time /confirm is called
+        # the sender's transport.send() has already returned (the archive
+        # is fully written), so two back-to-back scans on the same instance
+        # reliably see the same stable size both times.
+        receiver = Receiver(self.cfg, self._log)
+        receiver.scan_once()
+        time.sleep(0.1)
+        receiver.scan_once()
         unpack_dir = Path(self.cfg.receiver.unpack_dir)
         if not unpack_dir.exists():
             return False
