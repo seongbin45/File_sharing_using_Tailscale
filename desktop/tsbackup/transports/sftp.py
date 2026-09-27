@@ -4,9 +4,13 @@ The archive is written to a temporary name on the far end and renamed into
 place only after the upload completes, so a receiver watching the directory
 never sees a half-written file and tries to unpack it.
 
-Host key handling mirrors the web console's: a fingerprint pinned in config is
-required, and an unknown key is refused rather than trusted on sight - the
-first connection is the one that hands over the password.
+Host key handling differs from the web console's on purpose: the console
+refuses an unpinned key (an operator must paste the fingerprint in by hand),
+because it runs on a server with someone at a terminal to do that. A desktop
+install has no such operator standing by during an unattended run, so an
+empty pin here trusts-and-pins automatically on the first connection instead
+(trust on first use) and refuses only a later MISMATCH - a machine that
+answers differently than the one already pinned. See tsbackup/hostkeys.py.
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
+from .. import hostkeys
 from .base import Transport, TransferResult, register
 
 DEFAULT_PORT = 22
@@ -92,33 +97,21 @@ class SftpTransport(Transport):
 
 
 def _pinned_policy(paramiko, cfg, log):
-    import base64
-    import hashlib
-
-    expected = (getattr(cfg, "host_key", "") or "").strip()
-
     class Pinned(paramiko.MissingHostKeyPolicy):
         def missing_host_key(self, client, hostname, key):
-            fp = "SHA256:" + base64.b64encode(
-                hashlib.sha256(key.asbytes()).digest()
-            ).decode().rstrip("=")
+            fp = hostkeys.fingerprint(key)
+            expected = (getattr(cfg, "host_key", "") or "").strip()
             if not expected:
-                # No pin configured. Refuse rather than trust on first sight -
-                # the same stance as the web console.
-                raise paramiko.SSHException(
-                    f"호스트 키가 등록되지 않았습니다: {fp} "
-                    "(설정의 host_key 에 넣으십시오)"
-                )
-            if _norm(fp) != _norm(expected):
+                # First connection: trust and pin. cfg here is the same
+                # SenderConfig object the caller's AppConfig holds, so this
+                # mutation is visible to (and persisted by) engine.py's
+                # cfg.save() after the run finishes.
+                cfg.host_key = fp
+                log(f"호스트 키를 처음 보고 등록했습니다: {fp}")
+                return
+            if not hostkeys.same(fp, expected):
                 raise paramiko.SSHException(
                     f"호스트 키 불일치: 받은 {fp}, 등록된 {expected}"
                 )
 
     return Pinned()
-
-
-def _norm(v: str) -> str:
-    v = v.strip()
-    if v.lower().startswith("sha256:"):
-        v = v[7:]
-    return v.rstrip("=")

@@ -11,6 +11,7 @@ from __future__ import annotations
 from PySide6.QtCore import QObject, QThread, QTimer, Signal
 
 from . import engine_core
+from .engine_core import RETRY_INTERVAL_MINUTES, next_retry_state
 from .receiver import Receiver
 
 
@@ -44,6 +45,11 @@ class Engine(QObject):
     line = Signal(str)
     run_finished = Signal(object)
     next_run = Signal(str)             # human text for the next scheduled run
+    # Fires exactly once per failure incident, only after retries are
+    # exhausted - never on every failed attempt. The tray's notification and
+    # error icon hang off this, not off run_finished, so a run that fails
+    # once and then succeeds on retry never notifies at all.
+    failed_after_retries = Signal(object)  # RunResult
 
     def __init__(self, cfg, log) -> None:
         super().__init__()
@@ -53,6 +59,7 @@ class Engine(QObject):
         self._paused = False
         self._thread: QThread | None = None
         self._worker: _SenderWorker | None = None
+        self._retry_count = 0
 
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
@@ -83,6 +90,7 @@ class Engine(QObject):
 
     def stop(self) -> None:
         self._running = False
+        self._retry_count = 0
         self._timer.stop()
         self._recv_timer.stop()
         self._receiver.stop_http()
@@ -111,13 +119,17 @@ class Engine(QObject):
             self._schedule_next()
 
     def run_now(self) -> None:
-        """Manual trigger, honoured whether paused or idle."""
+        """Manual trigger, honoured whether paused or idle. Cancels any
+        pending retry timer first - a fresh manual run replaces it rather
+        than racing it when the retry later fires on its own."""
         if self.cfg.role == "receiver":
             self._on_receiver_tick()
             return
         if self._worker is not None:
             self.log.line("이미 실행 중입니다.")
             return
+        self._timer.stop()
+        self._retry_count = 0
         self._run_now()
 
     @property
@@ -152,11 +164,26 @@ class Engine(QObject):
             self._thread.wait()
         self._thread = None
         self._worker = None
-        if self._running and not self._paused:
-            self.status.emit("실행 중")
-            self._schedule_next()
-        elif self._paused:
+        # A transport can pin state into cfg as a side effect of a run (the
+        # SFTP transport's trust-on-first-connect host key, for one) - save
+        # unconditionally so that never depends on a settings-dialog save
+        # happening to follow.
+        self.cfg.save()
+
+        if not self._running:
+            return
+        if self._paused:
             self.status.emit("일시중지")
+            return
+
+        self.status.emit("실행 중")
+        action, self._retry_count = next_retry_state(result.ok, self._retry_count)
+        if action == "retry":
+            self._schedule_retry()
+        else:
+            if action == "exhausted":
+                self.failed_after_retries.emit(result)
+            self._schedule_next()
 
     def _schedule_next(self) -> None:
         import time
@@ -165,6 +192,16 @@ class Engine(QObject):
         self._timer.start(minutes * 60 * 1000)
         due = time.time() + minutes * 60
         self.next_run.emit(time.strftime("%Y-%m-%d %H:%M", time.localtime(due)))
+
+    def _schedule_retry(self) -> None:
+        import time
+
+        self._timer.start(RETRY_INTERVAL_MINUTES * 60 * 1000)
+        due = time.time() + RETRY_INTERVAL_MINUTES * 60
+        self.next_run.emit(
+            f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(due))} "
+            f"(재시도 {self._retry_count}/{engine_core.MAX_RETRIES})"
+        )
 
     def _on_timer(self) -> None:
         if self._running and not self._paused:

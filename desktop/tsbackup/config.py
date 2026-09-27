@@ -76,6 +76,15 @@ class SenderConfig:
     # http push target token (sent as a header; the receiver checks it).
     http_token: str = ""
 
+    # sftp: the far end's host-key fingerprint (webadmin/app/hostkeys.py's
+    # SHA256: form), pinned so a later connection to a different machine
+    # answering the same address is refused rather than silently trusted.
+    # Empty until the first successful connection - transports/sftp.py's
+    # _pinned_policy() trusts-and-pins automatically then, since there is no
+    # operator at a terminal to paste one in for an unattended install - or
+    # filled in automatically by a pairing exchange.
+    host_key: str = ""
+
 
 @dataclass
 class ReceiverConfig:
@@ -96,12 +105,25 @@ class ReceiverConfig:
     http_port: int = 8770
     http_token: str = ""           # required; uploads without it are refused
 
+    # Whether a remote sender pushes to this receiver over HTTP - decides
+    # whether the receiver's own HTTP listener starts. This is about what
+    # THIS machine expects to receive, not what this machine would send if
+    # its role were flipped to sender; see receiver_uses_http() below for
+    # the bug this field replaces.
+    expects_http: bool = False
+
 
 @dataclass
 class AppConfig:
     role: str = ROLE_SENDER
     minimize_to_tray: bool = True
     autostart_engine: bool = False   # begin the loop as soon as the app opens
+    # Whether the first-run wizard has been completed. Defaults False only
+    # for a genuinely new install (no config file at all yet) - load()
+    # forces this True when loading a file saved before this field existed,
+    # so upgrading never sends an already-working install through the
+    # wizard again.
+    onboarded: bool = False
     sender: SenderConfig = field(default_factory=SenderConfig)
     receiver: ReceiverConfig = field(default_factory=ReceiverConfig)
 
@@ -113,7 +135,12 @@ class AppConfig:
         if not path.exists():
             return cls()
         raw = json.loads(path.read_text(encoding="utf-8"))
-        return cls.from_dict(raw)
+        cfg = cls.from_dict(raw)
+        if "onboarded" not in raw:
+            # This file predates the wizard - it's already a working
+            # install, not a fresh one.
+            cfg.onboarded = True
+        return cfg
 
     @classmethod
     def from_dict(cls, raw: dict) -> "AppConfig":
@@ -123,13 +150,27 @@ class AppConfig:
             cfg.role = ROLE_SENDER
         cfg.minimize_to_tray = bool(raw.get("minimize_to_tray", cfg.minimize_to_tray))
         cfg.autostart_engine = bool(raw.get("autostart_engine", cfg.autostart_engine))
-        cfg.sender = _fill(SenderConfig, raw.get("sender", {}))
-        cfg.receiver = _fill(ReceiverConfig, raw.get("receiver", {}))
+        cfg.onboarded = bool(raw.get("onboarded", cfg.onboarded))
+        raw_sender = raw.get("sender", {})
+        raw_receiver = raw.get("receiver", {})
+        cfg.sender = _fill(SenderConfig, raw_sender)
+        cfg.receiver = _fill(ReceiverConfig, raw_receiver)
         if cfg.sender.transport not in TRANSPORTS:
             cfg.sender.transport = "taildrop"
         cfg.sender.fallback_transports = [
             t for t in cfg.sender.fallback_transports if t in TRANSPORTS
         ]
+        if (
+            "expects_http" not in raw_receiver
+            and cfg.role == ROLE_RECEIVER
+            and raw_sender.get("transport") == "http"
+        ):
+            # Migrate the old receiver_uses_http() misread: some real
+            # installs are already receiving over HTTP only because that
+            # buggy check happened to read "http" off the (unused, on a
+            # pure-receiver box) sender section. Fixing the bug must not
+            # silently stop HTTP receiving for them.
+            cfg.receiver.expects_http = True
         return cfg
 
     def save(self, path: Path | None = None) -> None:
@@ -169,10 +210,13 @@ class AppConfig:
         return out
 
     def receiver_uses_http(self) -> bool:
-        # The receiver runs an HTTP server only when the sender pushes over
-        # HTTP. There is no separate receiver-side transport switch: the
-        # receiver watches a folder for taildrop/sftp and serves for http.
-        return self.role == ROLE_RECEIVER and self.sender.transport == "http"
+        # The receiver runs an HTTP server only when a remote sender pushes
+        # over HTTP. This used to (wrongly) read self.sender.transport - this
+        # machine's own OUTBOUND setting, meaningless on a dedicated receiver
+        # box - instead of anything describing the remote sender. Now reads
+        # the receiver's own expects_http field; see from_dict()'s migration
+        # for configs saved before that field existed.
+        return self.role == ROLE_RECEIVER and self.receiver.expects_http
 
 
 def _fill(cls, raw: dict):

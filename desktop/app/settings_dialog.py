@@ -118,6 +118,10 @@ class SettingsDialog(QDialog):
         self.http_token = QLineEdit(s.http_token)
         form.addRow("토큰 (http)", self.http_token)
 
+        self.host_key = QLineEdit(s.host_key)
+        self.host_key.setPlaceholderText("비어 있으면 첫 연결 때 자동으로 등록됩니다 (TOFU)")
+        form.addRow("호스트 키 지문 (sftp)", self.host_key)
+
         self.sender_box = box
         return box
 
@@ -145,6 +149,10 @@ class SettingsDialog(QDialog):
         form.addRow("HTTP 포트", self.http_port)
         self.recv_token = QLineEdit(r.http_token)
         form.addRow("HTTP 토큰", self.recv_token)
+
+        self.expects_http = QCheckBox("보내는 쪽이 HTTP로 보냅니다 (HTTP 수신 서버를 켭니다)")
+        self.expects_http.setChecked(r.expects_http)
+        form.addRow("", self.expects_http)
 
         self.receiver_box = box
         return box
@@ -181,6 +189,7 @@ class SettingsDialog(QDialog):
         self.username.setEnabled(t == "sftp")
         self.remote_dir.setEnabled(t == "sftp")
         self.http_token.setEnabled(t == "http")
+        self.host_key.setEnabled(t == "sftp")
 
     # -------------------------------------------------------------- apply
 
@@ -203,6 +212,7 @@ class SettingsDialog(QDialog):
         s.username = self.username.text().strip()
         s.remote_dir = self.remote_dir.text().strip()
         s.http_token = self.http_token.text().strip()
+        s.host_key = self.host_key.text().strip()
 
         r = cfg.receiver
         r.incoming_dir = self.incoming_dir["edit"].text().strip()
@@ -211,3 +221,4 @@ class SettingsDialog(QDialog):
         r.http_bind = self.http_bind.text().strip() or "127.0.0.1"
         r.http_port = self.http_port.value()
         r.http_token = self.recv_token.text().strip()
+        r.expects_http = self.expects_http.isChecked()

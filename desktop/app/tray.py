@@ -4,12 +4,22 @@ The one screen the user specifically asked to have designed. The icon's state
 dot mirrors the engine, so a glance at the tray says whether it is running
 without opening the window. Its menu is the minimum needed to operate the app
 while it lives in the tray: open, run now, pause/resume, quit.
+
+Notifications are failure-only, and fire exactly once per incident (see
+Engine.failed_after_retries) - there is no notification for a normal
+success, including a success that follows a prior failure. showMessage()'s
+messageClicked signal is reliable on Windows but not guaranteed on macOS or
+under every Linux notification daemon, so the click action here is only a
+convenience: the tray icon's "error" state is the persistent signal that
+doesn't depend on the notification having been seen or clicked.
 """
 
 from __future__ import annotations
 
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
+
+from tsbackup.engine_core import MAX_RETRIES
 
 from .icons import app_icon
 
@@ -20,6 +30,7 @@ class Tray(QSystemTrayIcon):
         self.window = window
         self.engine = engine
         self._on_quit = on_quit
+        self._error = False
         self.setToolTip("TS Backup")
 
         menu = QMenu()
@@ -41,6 +52,8 @@ class Tray(QSystemTrayIcon):
         self.activated.connect(self._on_activated)
 
         engine.status.connect(self._on_status)
+        engine.run_finished.connect(self._on_run_result)
+        engine.failed_after_retries.connect(self._on_failed_after_retries)
 
     def _open(self) -> None:
         self.window.showNormal()
@@ -69,5 +82,25 @@ class Tray(QSystemTrayIcon):
             state = "running"
         elif text == "일시중지":
             state = "paused"
+        if self._error and state == "running":
+            # A failure notification just fired for this incident - stay on
+            # the error dot through the "running/waiting" status text that
+            # follows it, rather than snapping straight back to normal.
+            state = "error"
         self.setIcon(app_icon(state))
         self.act_pause.setText("재개" if text == "일시중지" else "일시중지")
+
+    def _on_run_result(self, result) -> None:
+        if result.ok and self._error:
+            self._error = False
+
+    def _on_failed_after_retries(self, result) -> None:
+        self._error = True
+        self.setIcon(app_icon("error"))
+        self.showMessage(
+            "백업 실패",
+            f"{MAX_RETRIES}번 자동으로 다시 시도했지만 계속 실패했습니다: "
+            f"{result.detail}\n다음 정해진 시각에 다시 시도합니다.",
+            QSystemTrayIcon.Warning,
+            10000,
+        )

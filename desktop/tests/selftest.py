@@ -121,10 +121,103 @@ def test_config_roundtrip():
     cfg = AppConfig()
     check("empty sender reports problems", len(cfg.problems()) > 0)
     cfg.role = "receiver"
-    cfg.sender.transport = "http"
+    cfg.receiver.expects_http = True
     check("http receiver without token is refused",
           any("토큰" in p for p in cfg.problems()))
     check("http receiver uses http server", cfg.receiver_uses_http())
+
+
+def test_config_migrations():
+    section("config migrations")
+    with tempfile.TemporaryDirectory() as tmp:
+        # A config saved by a version before `onboarded` existed must load
+        # as already onboarded - an existing working install must never be
+        # sent through the first-run wizard on upgrade.
+        pre_existing = {
+            "role": "sender",
+            "sender": {"source_dir": "x", "work_dir": "y"},
+            "receiver": {},
+        }
+        path = Path(tmp) / "pre_existing.json"
+        path.write_text(json.dumps(pre_existing), encoding="utf-8")
+        loaded = AppConfig.load(path)
+        check("pre-existing config loads as onboarded", loaded.onboarded is True)
+
+        # A genuinely fresh install (no file at all) must still see the
+        # wizard.
+        fresh = AppConfig.load(Path(tmp) / "missing.json")
+        check("fresh install is not onboarded", fresh.onboarded is False)
+
+        # The old receiver_uses_http() misread (checking sender.transport on
+        # a receiver box) must migrate to expects_http, so an install
+        # already relying on that coincidence keeps receiving over HTTP
+        # after the bug is fixed rather than going silently deaf.
+        old_http_receiver = {
+            "role": "receiver",
+            "sender": {"transport": "http"},
+            "receiver": {"incoming_dir": "x", "unpack_dir": "y"},
+        }
+        path2 = Path(tmp) / "old_http_receiver.json"
+        path2.write_text(json.dumps(old_http_receiver), encoding="utf-8")
+        migrated = AppConfig.load(path2)
+        check("old http-receiver workaround migrates to expects_http",
+              migrated.receiver.expects_http is True)
+
+        # A config that already has expects_http explicit (even False) must
+        # not be overridden by the migration.
+        explicit_false = {
+            "role": "receiver",
+            "sender": {"transport": "http"},
+            "receiver": {"incoming_dir": "x", "unpack_dir": "y", "expects_http": False},
+        }
+        path3 = Path(tmp) / "explicit.json"
+        path3.write_text(json.dumps(explicit_false), encoding="utf-8")
+        not_migrated = AppConfig.load(path3)
+        check("explicit expects_http is not overridden by migration",
+              not_migrated.receiver.expects_http is False)
+
+
+def test_retry_state():
+    section("retry/backoff decision")
+    from tsbackup.engine_core import next_retry_state
+
+    check("success resets the counter",
+          next_retry_state(True, 2) == ("reset", 0))
+    check("first failure schedules a retry",
+          next_retry_state(False, 0) == ("retry", 1))
+    check("second failure schedules a retry",
+          next_retry_state(False, 1) == ("retry", 2))
+    check("third failure (at the limit) still retries",
+          next_retry_state(False, 2) == ("retry", 3))
+    check("fourth failure exhausts retries and resets the counter",
+          next_retry_state(False, 3) == ("exhausted", 0))
+    check("a success right after exhaustion still resets cleanly",
+          next_retry_state(True, 0) == ("reset", 0))
+
+
+def test_hostkeys():
+    section("host key fingerprint (tsbackup/hostkeys.py)")
+    import paramiko
+
+    from tsbackup import hostkeys as hk
+
+    key = paramiko.RSAKey.generate(2048)
+    other = paramiko.RSAKey.generate(2048)
+    fp = hk.fingerprint(key)
+    check("fingerprint looks like ssh-keygen output",
+          fp.startswith("SHA256:") and len(fp) > 20, fp)
+
+    check("a fingerprint matches itself", hk.same(fp, fp))
+    check("a fingerprint mismatches a different key",
+          not hk.same(fp, hk.fingerprint(other)))
+
+    # People (and a pairing exchange payload) hand these around with or
+    # without the SHA256: prefix, and with or without base64 padding -
+    # webadmin/app/hostkeys.py tolerates the same variants, and this must
+    # keep matching it.
+    for variant in (fp[7:], fp + "=", fp.replace("SHA256:", "sha256:")):
+        check(f"tolerant of written form: {variant[:18]}...",
+              hk.same(fp, variant))
 
 
 def test_archiver_and_prune():
@@ -281,6 +374,9 @@ def test_transport_registry():
 
 if __name__ == "__main__":
     test_config_roundtrip()
+    test_config_migrations()
+    test_retry_state()
+    test_hostkeys()
     test_archiver_and_prune()
     test_progress_and_cancel()
     test_sender_pass_with_fallback()
