@@ -127,6 +127,14 @@ def run_once(log: logging.Logger) -> str:
                 return "killed_failed"
 
             install_staged_exe(exe_path(pend, release.asset_name), install_dir)
+            # Release the lock before deleting its own directory - on
+            # Windows, shutil.rmtree can't remove download.lock while
+            # PendingLock still holds an open handle on it (msvcrt.locking
+            # doesn't set FILE_SHARE_DELETE), which raised a real
+            # [WinError 32] here (caught and logged, but the pending dir
+            # was then never actually cleaned up). release() is safe to
+            # call twice - the finally block below still runs.
+            lock.release()
             delete_version_dir(pend)
 
             if is_tray_autostart_registered():

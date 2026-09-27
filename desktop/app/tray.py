@@ -28,6 +28,17 @@ from update_manager.paths import UM_EXE_NAME, find_tsbackup_install_dir
 from .icons import app_icon
 
 
+def _find_update_manager_exe():
+    """Module-level, not a Tray method: lets a test exercise this lookup
+    without constructing a real QSystemTrayIcon (each one is a real OS
+    resource - cheap to make one, not free to make several per test run)."""
+    install_dir = find_tsbackup_install_dir()
+    if install_dir is None:
+        return None
+    exe = install_dir / UM_EXE_NAME
+    return exe if exe.is_file() else None
+
+
 class Tray(QSystemTrayIcon):
     def __init__(self, window, engine, on_quit) -> None:
         super().__init__(app_icon("idle"))
@@ -51,7 +62,7 @@ class Tray(QSystemTrayIcon):
         # for what this triggers. Fire-and-forget: the update manager logs
         # its own result to update_manager.log; there is no UI polling
         # here by design, matching the plan's scoped-down tray integration.
-        um_exe = self._update_manager_exe()
+        um_exe = _find_update_manager_exe()
         if um_exe is not None:
             menu.addSeparator()
             self.act_check_update = QAction("지금 업데이트 확인", menu)
@@ -72,13 +83,6 @@ class Tray(QSystemTrayIcon):
         engine.status.connect(self._on_status)
         engine.run_finished.connect(self._on_run_result)
         engine.failed_after_retries.connect(self._on_failed_after_retries)
-
-    def _update_manager_exe(self):
-        install_dir = find_tsbackup_install_dir()
-        if install_dir is None:
-            return None
-        exe = install_dir / UM_EXE_NAME
-        return exe if exe.is_file() else None
 
     def _check_for_update(self, um_exe) -> None:
         # creationflags is Windows-only (the sole platform this ever

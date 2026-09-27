@@ -52,10 +52,17 @@ def check(name, cond, detail=""):
     print(("  PASS  " if cond else "  FAIL  ") + name + (f"   {detail}" if not cond else ""))
     if not cond:
         FAILURES.append(name)
+    # CI's piped stdout is fully buffered, not line-buffered - a hard
+    # native crash (not a normal Python exception) loses everything still
+    # sitting in that buffer, showing zero output for tests that actually
+    # ran and passed. Flush after every check so a real crash's log still
+    # shows exactly how far execution got.
+    sys.stdout.flush()
 
 
 def section(t):
     print(f"\n{t}")
+    sys.stdout.flush()
 
 
 def _fresh(root: Path, role: str = ROLE_SENDER):
@@ -150,29 +157,38 @@ def test_tray_signal_wiring(app: QApplication, root: Path) -> None:
 def test_tray_update_check_action(app: QApplication, root: Path) -> None:
     section("Tray '지금 업데이트 확인' action - present only when an "
             "installer-placed update manager exe actually exists")
-    cfg, log, engine = _fresh(root, ROLE_SENDER)
-    win = MainWindow(cfg, log, engine, lambda: None)
+    # _find_update_manager_exe() is a plain module-level function (not a
+    # Tray method) specifically so both "absent" and "present" cases can
+    # be checked without constructing a real QSystemTrayIcon for each one -
+    # each is a real OS resource, and this file already constructs one in
+    # test_tray_signal_wiring above, so only one more is made below.
+    from app.tray import _find_update_manager_exe
 
     with patch("app.tray.find_tsbackup_install_dir", return_value=None):
-        tray_no_um = Tray(win, engine, lambda: None)
-    check("no update-manager exe found (dev/source run) -> no menu action",
-          not hasattr(tray_no_um, "act_check_update"))
+        check("no install dir found (dev/source run) -> no update manager exe",
+              _find_update_manager_exe() is None)
 
     fake_install = root / "fake_install"
     fake_install.mkdir(exist_ok=True)
     fake_um_exe = fake_install / "TsBackup_update_manager.exe"
     fake_um_exe.write_bytes(b"stub")
     with patch("app.tray.find_tsbackup_install_dir", return_value=fake_install):
-        tray_with_um = Tray(win, engine, lambda: None)
-    check("update-manager exe found -> menu action is added",
-          hasattr(tray_with_um, "act_check_update"))
+        check("install dir found with the exe present -> resolved",
+              _find_update_manager_exe() == fake_um_exe)
 
-    with patch("app.tray.subprocess.Popen") as popen:
-        tray_with_um._check_for_update(fake_um_exe)
-    check("clicking it launches the exe with --once",
-          popen.call_args[0][0] == [str(fake_um_exe), "--once"], popen.call_args)
+        cfg, log, engine = _fresh(root, ROLE_SENDER)
+        win = MainWindow(cfg, log, engine, lambda: None)
+        tray = Tray(win, engine, lambda: None)
+        check("Tray construction picks it up -> menu action is added",
+              hasattr(tray, "act_check_update"))
 
-    win.close()
+        with patch("app.tray.subprocess.Popen") as popen:
+            tray._check_for_update(fake_um_exe)
+        check("clicking it launches the exe with --once",
+              popen.call_args[0][0] == [str(fake_um_exe), "--once"], popen.call_args)
+
+        tray.hide()
+        win.close()
 
 
 def test_wizard(app: QApplication, root: Path) -> None:
