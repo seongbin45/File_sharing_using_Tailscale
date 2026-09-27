@@ -825,6 +825,29 @@ def test_receiver_unpack():
             check("targets receiver.incoming_dir, not Taildrop's own default",
                   args[-1] == str(incoming), args)
 
+        section("taildrop Downloads sweep - the Windows GUI client auto-"
+                "claims pending files into Downloads itself, on its own "
+                "timer, almost always winning the race against `tailscale "
+                "file get` above - so this is the fallback that actually "
+                "finds them afterward")
+        fake_home = root / "FakeHome"
+        downloads = fake_home / "Downloads"
+        downloads.mkdir(parents=True)
+        matching = downloads / "PycharmProjects_2026_02_02_02_02.7z"
+        matching.write_bytes(b"looks like one of ours")
+        unrelated = downloads / "vacation_photo.7z"
+        unrelated.write_bytes(b"not ours - don't touch it")
+
+        with patch("tsbackup.transports.taildrop.tailscale_binary", return_value=None), \
+             patch("tsbackup.receiver.Path.home", return_value=fake_home):
+            receiver.scan_once()
+        check("an archive matching our own naming scheme (archiver.py's "
+              "STAMP_RE) is moved out of Downloads into incoming_dir",
+              (incoming / matching.name).exists() and not matching.exists())
+        check("a .7z that doesn't match our naming scheme is left alone - "
+              "Downloads is the user's own folder, not ours to sweep",
+              unrelated.exists())
+
 
 def test_transport_registry():
     section("transport registry")

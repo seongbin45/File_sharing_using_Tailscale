@@ -72,30 +72,66 @@ class Receiver:
         return done
 
     def _pull_taildrop(self) -> None:
-        """Actively pull any pending Taildrop files into incoming_dir.
+        """Get pending Taildrop archives into incoming_dir, by whichever
+        path actually applies.
 
-        The Tailscale GUI client itself only ever saves received files to a
-        fixed, non-configurable location (Windows: %USERPROFILE%\\Downloads) -
-        it never writes into incoming_dir on its own, so passively polling
-        that directory misses every taildrop arrival. `tailscale file get`
-        is the CLI mechanism that actively claims pending files into a
-        directory we choose; it's a no-op when nothing is pending, so it's
-        safe to call on every scan pass.
+        Two different delivery paths exist, and only one of them is under
+        our control:
+
+          - No Tailscale GUI running (tailscaled alone, a headless
+            receiver box): nothing claims pending files on its own, so
+            `tailscale file get` is genuinely what retrieves them - and
+            it's a no-op when nothing is pending, safe to call every pass.
+          - The Tailscale GUI running (the normal desktop case, v1.34+):
+            it auto-claims every pending file into
+            %USERPROFILE%\\Downloads *itself*, in the background, on its
+            own timer - and normally wins the race against our own poll
+            long before it fires, so `tailscale file get` finds nothing
+            left pending even though the file really did arrive. The
+            only place it's reliably still sitting afterward is Downloads
+            itself, since that destination isn't configurable.
+
+        So both are done every pass: try the CLI claim (covers the no-GUI
+        case), then sweep Downloads for archives matching this app's own
+        naming scheme (archiver.py's STAMP_RE) and move only those into
+        incoming_dir - never anything else a person keeps in Downloads.
         """
         from .transports.taildrop import tailscale_binary
 
-        binary = tailscale_binary()
-        if not binary:
-            return
         incoming = Path(self.cfg.receiver.incoming_dir)
         incoming.mkdir(parents=True, exist_ok=True)
+
+        binary = tailscale_binary()
+        if binary:
+            try:
+                subprocess.run(
+                    [binary, "file", "get", "--wait=false", "--conflict=skip", str(incoming)],
+                    capture_output=True, text=True, timeout=30,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                self.log(f"taildrop 수신 확인 실패: {exc}")
+
+        self._sweep_taildrop_default_dir(incoming)
+
+    def _sweep_taildrop_default_dir(self, incoming: Path) -> None:
+        default_dir = Path.home() / "Downloads"
         try:
-            subprocess.run(
-                [binary, "file", "get", "--wait=false", "--conflict=skip", str(incoming)],
-                capture_output=True, text=True, timeout=30,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            self.log(f"taildrop 수신 확인 실패: {exc}")
+            same = default_dir.samefile(incoming)
+        except OSError:
+            same = default_dir == incoming
+        if same or not default_dir.is_dir():
+            return
+        for path in default_dir.glob("*.7z"):
+            if not STAMP_RE.search(path.name):
+                continue
+            dest = incoming / path.name
+            if dest.exists():
+                continue
+            try:
+                path.replace(dest)
+                self.log(f"Downloads에서 수신 파일 이동: {path.name}")
+            except OSError as exc:
+                self.log(f"Downloads 파일 이동 실패: {path.name} ({exc})")
 
     def _settled(self, path: Path) -> bool:
         try:
