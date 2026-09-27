@@ -337,6 +337,30 @@ def test_pairing():
         listener.stop()
 
 
+def test_overdue_senders():
+    section("silence detection (tsbackup.pairing.overdue_senders)")
+    from tsbackup import pairing
+
+    now = 1_000_000.0
+    registry = {
+        "on-time": {"device_name": "a", "interval_minutes": 60, "last_seen": now - 60},
+        "late": {"device_name": "b", "interval_minutes": 60, "last_seen": now - 60 * 200},
+        "borderline-ok": {"device_name": "c", "interval_minutes": 60, "last_seen": now - 60 * 89},
+        "borderline-late": {"device_name": "d", "interval_minutes": 60, "last_seen": now - 60 * 91},
+        "no-interval-yet": {"device_name": "e", "last_seen": now - 60 * 1000},
+    }
+    overdue = pairing.overdue_senders(registry, now=now)
+    names = {d["device_name"] for d in overdue}
+    check("an on-time sender is not overdue", "a" not in names)
+    check("a very late sender is overdue", "b" in names)
+    check("just under 1.5x the interval is not yet overdue", "c" not in names)
+    check("just over 1.5x the interval is overdue", "d" in names)
+    check("a sender missing interval_minutes is skipped, not guessed at",
+          "e" not in names)
+    check("most overdue sorts first",
+          overdue[0]["device_name"] == "b" if overdue else False, overdue)
+
+
 def test_run_test_transfer():
     section("wizard's test-transfer step (tsbackup.pairing.run_test_transfer)")
     import tempfile
@@ -607,6 +631,7 @@ if __name__ == "__main__":
     test_config_migrations()
     test_retry_state()
     test_pairing()
+    test_overdue_senders()
     test_run_test_transfer()
     test_hostkeys()
     test_archiver_and_prune()

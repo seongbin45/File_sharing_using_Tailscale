@@ -160,6 +160,31 @@ def load_known_senders(path: Path) -> dict:
     return _load_registry(path)
 
 
+def overdue_senders(registry: dict, now: float | None = None, grace: float = 1.5) -> list[dict]:
+    """Which known senders are overdue for their expected interval - the
+    receiver home screen's silence-detection banner reads this, independent
+    of Qt so it's testable headlessly. `grace` multiplies the sender's own
+    reported interval before calling it late, so one run running a few
+    minutes behind schedule isn't a false alarm.
+
+    Returns a list of {device_id, device_name, interval_minutes, last_seen,
+    elapsed_seconds}, most overdue first. A sender missing interval_minutes
+    or last_seen (a registry written by a version predating those fields)
+    is skipped rather than guessed at.
+    """
+    now = now if now is not None else time.time()
+    overdue = []
+    for device_id, info in registry.items():
+        interval_minutes = info.get("interval_minutes")
+        last_seen = info.get("last_seen")
+        if not interval_minutes or not last_seen:
+            continue
+        elapsed = now - last_seen
+        if elapsed > interval_minutes * 60 * grace:
+            overdue.append({**info, "device_id": device_id, "elapsed_seconds": elapsed})
+    return sorted(overdue, key=lambda d: -d["elapsed_seconds"])
+
+
 # ------------------------------------------------------- local ssh host key
 
 _HOST_KEY_CANDIDATES = [
