@@ -9,8 +9,15 @@
 |---|---|---|---|
 | **7-Zip** | 필수 | 필수 | 압축 / 압축 해제 |
 | **git** | 선택 | **필수** | 저장소에서 스크립트를 받아옴 / 받는 쪽 관리 저장소 |
+| **Python 3** | 선택 | 선택 | `webadmin/` 콘솔을 돌리거나 `desktop/` 앱을 소스에서 직접 실행·개발할 때만 |
 
 `tar` 와 `wscript`, PowerShell 은 Windows 에 기본 포함이라 설치할 것이 없습니다.
+
+**Python 이 필요 없는 경우:** `scripts/` 의 백업 배치/PowerShell 파이프라인(이 문서의 원래
+대상)은 Python 을 전혀 쓰지 않습니다 — [README](../README.md#왜-이런-구조인가) 참고. 빌드된
+`TsBackup-Setup.exe` 를 그냥 설치해 쓰는 것도 마찬가지입니다 — PyInstaller 로 파이썬 런타임이
+이미 exe 안에 들어 있습니다. Python 은 오직 `webadmin/`(관리 콘솔) 을 돌리거나 `desktop/` 앱을
+소스에서 고쳐가며 실행할 때만 필요합니다.
 
 ---
 
@@ -21,10 +28,15 @@
 ```cmd
 dir "C:\Program Files\7-Zip\7z.exe"
 git --version
+python --version
 ```
 
 `7z.exe` 가 나오면 7-Zip 은 끝났습니다. 스크립트는 **PATH 가 아니라 이 전체 경로로** 직접
 호출하므로 PATH 등록은 필요 없습니다.
+
+**`python --version` 이 버전 대신 Microsoft Store 를 열거나 아무것도 안 하면** Python 이
+없는 것이 맞습니다 — Windows 10/11 은 설치 안 된 `python.exe` 이름을 스토어로 연결하는
+"앱 실행 별칭"을 기본으로 깔아 두기 때문에, 이 동작 자체가 "없다"는 신호입니다.
 
 ---
 
@@ -41,19 +53,27 @@ winget --version
 ```cmd
 winget install --id 7zip.7zip -e --accept-source-agreements --accept-package-agreements
 winget install --id Git.Git  -e --accept-source-agreements --accept-package-agreements
+winget install --id Python.Python.3.12 -e --accept-source-agreements --accept-package-agreements
 ```
+
+Python 이 필요할 때만 세 번째 줄도 실행하십시오. `Python.Python.3.12` 의 끝자리
+버전(`3.12`)은 계속 바뀝니다 — 먼저 `winget search Python.Python.3` 로 현재 나오는 정확한
+id 를 확인한 뒤 그 id 를 쓰는 편이 안전합니다.
 
 `-e` 는 이름이 정확히 일치하는 패키지만 설치한다는 뜻입니다. 없으면 비슷한 이름의 다른
 패키지가 걸릴 수 있습니다.
 
-**관리자 권한이 필요할 수 있습니다.** 두 패키지 모두 기본적으로 시스템 범위로 설치되므로,
-비관리자 SSH 세션에서는 UAC 승격에 실패할 수 있습니다. 그 경우 방법 B 로 가십시오.
+**관리자 권한이 필요할 수 있습니다.** 세 패키지 모두 기본적으로 시스템 범위로 설치되므로,
+비관리자 SSH 세션에서는 UAC 승격에 실패할 수 있습니다. 그 경우 방법 B 로 가십시오. winget 의
+Python 패키지는 `PrependPath` 를 기본으로 켜 두므로 별도 설정 없이도 PATH 에 등록됩니다.
 
 설치 후 새 세션에서 확인합니다(현재 세션의 PATH 에는 반영되지 않습니다).
 
 ```cmd
 dir "C:\Program Files\7-Zip\7z.exe"
 git --version
+python --version
+python -m pip --version
 ```
 
 ---
@@ -194,6 +214,44 @@ Start-Process -FilePath 'C:\Scripts\git-installer.exe' -ArgumentList '/VERYSILEN
 git 은 설치 시 PATH 에 등록되므로, 설치 후 **새 세션**에서 `git --version` 이 나와야 합니다.
 현재 세션에는 반영되지 않습니다.
 
+### B-6. Python (webadmin / desktop 소스 실행 시에만)
+
+python.org 의 공식 배포판입니다. 파일명의 버전 번호가 계속 바뀌므로 다운로드 페이지에서
+현재 값을 받아옵니다 — 7-Zip 과 같은 방식입니다.
+
+```powershell
+$page = Invoke-WebRequest -Uri 'https://www.python.org/downloads/windows/' -UseBasicParsing
+$file = ($page.Links.href | Where-Object { $_ -match 'python-3\.\d+\.\d+-amd64\.exe$' } | Select-Object -First 1)
+$file
+Invoke-WebRequest -Uri $file -OutFile 'C:\Scripts\python-installer.exe' -UseBasicParsing
+```
+
+받은 뒤 크기(25MB 안팎)와 `MZ` 헤더를 다른 도구와 같은 방식으로 확인하십시오.
+
+```powershell
+Start-Process -FilePath 'C:\Scripts\python-installer.exe' `
+  -ArgumentList 'InstallAllUsers=0','PrependPath=1','Include_test=0','InstallLauncherAllUsers=0','/quiet' -Wait
+```
+
+`InstallAllUsers=0` 은 사용자 범위 설치라 관리자 권한이 없어도 됩니다(7-Zip/git 의 방법 B
+와 같은 이유). `PrependPath=1` 을 빼먹으면 설치는 되지만 **새 세션에서도** `python`/`pip` 가
+안 잡힙니다 — 이 설치본은 7-Zip 과 달리 PATH 등록이 선택 사항이라 꼭 켜야 합니다.
+
+관리자 권한으로 전체 사용자에게 설치하려면 `InstallAllUsers=1` 로 바꾸고 관리자 세션에서
+실행하십시오.
+
+설치 후 **새 세션**에서 확인합니다.
+
+```cmd
+python --version
+python -m pip --version
+```
+
+`python` 대신 Microsoft Store 가 열리면, 설치는 됐지만 Windows 의 "앱 실행 별칭"이 아직
+`python.exe` 를 가로채고 있는 것입니다 — 설정 > 앱 > 고급 앱 설정 > 앱 실행 별칭에서
+`python.exe`/`python3.exe` 항목을 끄면 해결됩니다. `PrependPath=1` 로 설치했다면 보통
+겪지 않는 문제입니다.
+
 ---
 
 ## 설치 확인
@@ -202,6 +260,7 @@ git 은 설치 시 PATH 에 등록되므로, 설치 후 **새 세션**에서 `gi
 dir "C:\Program Files\7-Zip\7z.exe"
 "C:\Program Files\7-Zip\7z.exe" i
 git --version
+python --version
 ```
 
 두 번째 줄이 7-Zip 버전과 지원 포맷을 출력하면 정상입니다.
@@ -210,9 +269,45 @@ git --version
 이 시스템은 PC 두 대를 오가며 작업하므로 실제로 헷갈립니다.
 
 ```powershell
-"$env:COMPUTERNAME : 7z  = " + (Test-Path 'C:\Program Files\7-Zip\7z.exe')
-"$env:COMPUTERNAME : git = " + (Get-Command git -ErrorAction SilentlyContinue).Source
+"$env:COMPUTERNAME : 7z     = " + (Test-Path 'C:\Program Files\7-Zip\7z.exe')
+"$env:COMPUTERNAME : git    = " + (Get-Command git -ErrorAction SilentlyContinue).Source
+"$env:COMPUTERNAME : python = " + (Get-Command python -ErrorAction SilentlyContinue).Source
 ```
+
+---
+
+## 저장소 받기 + 파이썬 패키지 설치 (webadmin / desktop 소스 실행 시)
+
+`scripts/` 배치 파이프라인이나 빌드된 `TsBackup-Setup.exe` 만 쓴다면 이 절은 건너뛰어도
+됩니다. `webadmin/` 콘솔을 띄우거나 `desktop/` 앱을 소스에서 직접 실행·개발할 때만
+필요합니다. git 과 Python 이 위에서 이미 확인됐다는 전제입니다.
+
+```cmd
+mkdir C:\Scripts 2>nul
+git clone https://github.com/seongbin45/File_sharing_using_Tailscale.git C:\Scripts\src
+```
+
+두 컴포넌트 중 필요한 쪽만 골라 venv 를 만들고 그 안에 패키지를 설치합니다 — 시스템
+전역 Python 에 바로 설치하지 않는 이유는 아래에 있습니다.
+
+```cmd
+:: webadmin 콘솔
+python -m venv C:\Scripts\webadmin-venv
+C:\Scripts\webadmin-venv\Scripts\python -m pip install -r C:\Scripts\src\webadmin\requirements.txt
+
+:: 또는 desktop 앱을 소스에서
+python -m venv C:\Scripts\src\desktop\.venv
+C:\Scripts\src\desktop\.venv\Scripts\python -m pip install -r C:\Scripts\src\desktop\requirements.txt
+```
+
+**venv 를 쓰는 이유:** `pip install -r requirements.txt` 를 venv 없이 바로 돌리면
+비관리자 세션에서는 전역 site-packages 에 쓰기 권한이 없어 실패하거나(관리자 세션이면
+성공하지만 시스템 Python 환경을 오염시킴), 이미 다른 용도로 쓰던 전역 패키지 버전과
+충돌할 수 있습니다. venv 는 이 프로젝트만의 격리된 패키지 집합을 만들어 두 문제를 모두
+피합니다.
+
+각 README 의 나머지 설치·실행 단계는 [webadmin/README.md](../webadmin/README.md),
+[desktop/README.md](../desktop/README.md) 를 보십시오.
 
 ---
 
@@ -249,3 +344,6 @@ PATH 에 의존하지 않는 이유는 두 가지입니다.
 | 설치가 멈추거나 조용히 실패 | `Program Files` 쓰기에 관리자 권한 필요. UAC 가 물리 화면에 떠 있음 |
 | 설치했는데 `git --version` 이 안 됨 | PATH 변경은 새 세션부터 적용됨 |
 | `/D=` 를 따옴표로 감쌌더니 무시됨 | NSIS 규칙상 `/D=` 는 마지막 인자이고 따옴표 불가 |
+| `python` 이 버전 대신 Microsoft Store 를 엶 | 설치 안 된 상태의 "앱 실행 별칭"이 아직 남음. `PrependPath=1` 로 재설치하거나 설정 > 앱 실행 별칭에서 끄기 |
+| 설치했는데 새 세션에서도 `python`/`pip` 를 못 찾음 | Python 설치본은 `PrependPath=1` 을 직접 안 넣으면 PATH 등록을 안 함(7-Zip/git 과 다름) |
+| `pip install -r requirements.txt` 가 권한 오류로 실패 | venv 없이 전역 Python 에 설치하려 함. `python -m venv` 로 격리된 환경을 먼저 만들 것 |
