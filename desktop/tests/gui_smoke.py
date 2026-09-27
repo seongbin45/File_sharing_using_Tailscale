@@ -147,6 +147,34 @@ def test_tray_signal_wiring(app: QApplication, root: Path) -> None:
     win.close()
 
 
+def test_tray_update_check_action(app: QApplication, root: Path) -> None:
+    section("Tray '지금 업데이트 확인' action - present only when an "
+            "installer-placed update manager exe actually exists")
+    cfg, log, engine = _fresh(root, ROLE_SENDER)
+    win = MainWindow(cfg, log, engine, lambda: None)
+
+    with patch("app.tray.find_tsbackup_install_dir", return_value=None):
+        tray_no_um = Tray(win, engine, lambda: None)
+    check("no update-manager exe found (dev/source run) -> no menu action",
+          not hasattr(tray_no_um, "act_check_update"))
+
+    fake_install = root / "fake_install"
+    fake_install.mkdir(exist_ok=True)
+    fake_um_exe = fake_install / "TsBackup_update_manager.exe"
+    fake_um_exe.write_bytes(b"stub")
+    with patch("app.tray.find_tsbackup_install_dir", return_value=fake_install):
+        tray_with_um = Tray(win, engine, lambda: None)
+    check("update-manager exe found -> menu action is added",
+          hasattr(tray_with_um, "act_check_update"))
+
+    with patch("app.tray.subprocess.Popen") as popen:
+        tray_with_um._check_for_update(fake_um_exe)
+    check("clicking it launches the exe with --once",
+          popen.call_args[0][0] == [str(fake_um_exe), "--once"], popen.call_args)
+
+    win.close()
+
+
 def test_wizard(app: QApplication, root: Path) -> None:
     section("SetupWizard construction and sender-path wiring (Phase 3)")
     cfg = AppConfig()
@@ -313,6 +341,7 @@ def main() -> int:
         test_role_switch_rebuild(app, root)
         test_settings_dialog(app, root)
         test_tray_signal_wiring(app, root)
+        test_tray_update_check_action(app, root)
         test_wizard(app, root)
         test_wizard_receiver_page(app, root)
         test_wizard_receiver_expiry_escape_hatch(app, root)

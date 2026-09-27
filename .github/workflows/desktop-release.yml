@@ -60,6 +60,13 @@ jobs:
         # Fast, no Qt/network. If the logic is broken, fail before building.
         run: python -m tests.selftest
 
+      - name: Update manager unit tests
+        # Also fast, no Qt, no live network (every GitHub/download call is
+        # mocked) - covers update_manager/'s version compare, asset
+        # selection, resumable/digest-verified download, and run_once()'s
+        # state machine against a fake install dir.
+        run: python -m tests.test_update_manager
+
       - name: GUI smoke test
         # Actually constructs MainWindow (both roles), SettingsDialog, Tray,
         # and SetupWizard and exercises their wiring (role-switch rebuild,
@@ -87,6 +94,24 @@ jobs:
           .\dist\TsBackup.exe --config
           .\dist\TsBackup.exe --check-gui
 
+      - name: Build TsBackup_update_manager.exe
+        # A fully independent background exe - see update_manager/'s own
+        # docs. tsbackup.iss's [Files] section expects this at dist\ next
+        # to TsBackup.exe.
+        run: pyinstaller build/update_manager.spec
+
+      - name: Smoke-test the update manager binary
+        # --once against a scratch install dir with no real TsBackup.exe
+        # in it: proves the frozen bundle's imports resolve (ctypes/winreg/
+        # urllib) and that run_once() reaches and correctly reports
+        # "no_version" for a directory with no VERSION/exe to read -
+        # without needing a real release or a real installed app.
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\um_smoke" | Out-Null
+          $env:TSBACKUP_INSTALL_DIR = "$env:RUNNER_TEMP\um_smoke"
+          .\dist\TsBackup_update_manager.exe --once
+
       - name: Determine version
         # From the vX.Y.Z tag when this run was triggered by one; 0.0.0 for
         # a workflow_dispatch run with no tag context (e.g. validating the
@@ -97,6 +122,15 @@ jobs:
           $raw = "${{ github.ref_name }}"
           if ($raw -match '^v(\d+\.\d+\.\d+)$') { $v = $matches[1] } else { $v = "0.0.0" }
           "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Write VERSION
+        # Plain-text sidecar the update manager reads to know what's
+        # currently installed (update_manager/versioning.py's
+        # read_installed_version() prefers this over the PE FileVersion /
+        # ARP DisplayVersion fallbacks) - same version string iscc gets
+        # below, so both agree.
+        shell: pwsh
+        run: Set-Content -Path dist\VERSION -Value "${{ steps.ver.outputs.version }}" -NoNewline -Encoding ascii
 
       - name: Build installer
         run: iscc /DMyAppVersion=${{ steps.ver.outputs.version }} build\tsbackup.iss
@@ -109,10 +143,19 @@ jobs:
         shell: pwsh
         run: |
           Start-Process -FilePath ".\dist\TsBackup-Setup.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/CURRENTUSER" -Wait
-          $installed = "$env:LOCALAPPDATA\Programs\TsBackup\TsBackup.exe"
+          $installDir = "$env:LOCALAPPDATA\Programs\TsBackup"
+          $installed = "$installDir\TsBackup.exe"
           if (!(Test-Path $installed)) { throw "installed exe not found at $installed" }
           & $installed --config
           & $installed --check-gui
+          # The update manager's own files, per tsbackup.iss's [Files] -
+          # confirms they actually land in the real install dir, not just
+          # that iscc compiled without complaint.
+          foreach ($name in @("TsBackup_update_manager.exe","TsBackup_update_manager.bat","TsBackup_update_manager_hidden.vbs","VERSION")) {
+            if (!(Test-Path "$installDir\$name")) { throw "missing installed file: $installDir\$name" }
+          }
+          $env:TSBACKUP_INSTALL_DIR = $installDir
+          & "$installDir\TsBackup_update_manager.exe" --once
 
       # Always keep the installer as a build artifact, even for
       # workflow_dispatch runs that are not tied to a tag.
@@ -128,7 +171,9 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: desktop/dist/TsBackup-Setup.exe
+          files: |
+            desktop/dist/TsBackup-Setup.exe
+            desktop/dist/TsBackup.exe
           fail_on_unmatched_files: true
 
       - name: Remove stale release assets
@@ -137,9 +182,14 @@ jobs:
         # under a different name (this is exactly how v0.1.0 ended up with
         # both the old portable TsBackup.exe and the new TsBackup-Setup.exe
         # sitting side by side after this installer change). Keep only the
-        # current asset name so a release page never shows two conflicting
-        # downloads. gh CLI + GITHUB_TOKEN are already available on the
-        # runner - no extra setup needed.
+        # current asset names so a release page never shows a stale/
+        # conflicting download. gh CLI + GITHUB_TOKEN are already available
+        # on the runner - no extra setup needed.
+        #
+        # TsBackup.exe is kept deliberately alongside TsBackup-Setup.exe now
+        # (not stale) - update_manager/'s auto-updater downloads this raw
+        # exe directly, never the installer (running Setup.exe unattended
+        # would pop the Inno wizard).
         if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
         env:
@@ -147,10 +197,11 @@ jobs:
         run: |
           $tag = "${{ github.ref_name }}"
           $repo = "${{ github.repository }}"
+          $keep = @("TsBackup-Setup.exe", "TsBackup.exe")
           $names = gh release view $tag --repo $repo --json assets --jq ".assets[].name"
           foreach ($name in ($names -split "`n")) {
             $name = $name.Trim()
-            if ($name -and $name -ne "TsBackup-Setup.exe") {
+            if ($name -and ($keep -notcontains $name)) {
               Write-Host "Removing stale release asset: $name"
               gh release delete-asset $tag $name --repo $repo --yes
             }

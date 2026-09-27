@@ -16,10 +16,14 @@ doesn't depend on the notification having been seen or clicked.
 
 from __future__ import annotations
 
+import subprocess
+import sys
+
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 from tsbackup.engine_core import MAX_RETRIES
+from update_manager.paths import UM_EXE_NAME, find_tsbackup_install_dir
 
 from .icons import app_icon
 
@@ -41,6 +45,20 @@ class Tray(QSystemTrayIcon):
         menu.addAction(self.act_open)
         menu.addAction(self.act_run)
         menu.addAction(self.act_pause)
+
+        # Only shown when the installer actually placed an update manager
+        # exe (a source/dev run has none) - see update_manager/'s own docs
+        # for what this triggers. Fire-and-forget: the update manager logs
+        # its own result to update_manager.log; there is no UI polling
+        # here by design, matching the plan's scoped-down tray integration.
+        um_exe = self._update_manager_exe()
+        if um_exe is not None:
+            menu.addSeparator()
+            self.act_check_update = QAction("지금 업데이트 확인", menu)
+            self.act_check_update.triggered.connect(
+                lambda: self._check_for_update(um_exe))
+            menu.addAction(self.act_check_update)
+
         menu.addSeparator()
         menu.addAction(self.act_quit)
         self.setContextMenu(menu)
@@ -54,6 +72,26 @@ class Tray(QSystemTrayIcon):
         engine.status.connect(self._on_status)
         engine.run_finished.connect(self._on_run_result)
         engine.failed_after_retries.connect(self._on_failed_after_retries)
+
+    def _update_manager_exe(self):
+        install_dir = find_tsbackup_install_dir()
+        if install_dir is None:
+            return None
+        exe = install_dir / UM_EXE_NAME
+        return exe if exe.is_file() else None
+
+    def _check_for_update(self, um_exe) -> None:
+        # creationflags is Windows-only (the sole platform this ever
+        # actually runs on - um_exe only exists when tsbackup.iss's
+        # [Files] placed it), but keep this callable without raising on a
+        # dev/test invocation elsewhere.
+        kwargs = {}
+        if sys.platform == "win32":
+            kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        try:
+            subprocess.Popen([str(um_exe), "--once"], close_fds=True, **kwargs)
+        except OSError:
+            pass
 
     def _open(self) -> None:
         self.window.showNormal()
