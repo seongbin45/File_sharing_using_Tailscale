@@ -160,6 +160,34 @@ def load_known_senders(path: Path) -> dict:
     return _load_registry(path)
 
 
+def record_heartbeat(path: Path, device_id: str, interval_minutes=None) -> None:
+    """Update a known sender's last_seen when an ordinary scheduled transfer
+    actually arrives - distinct from _handle_pair()'s registry write, which
+    only ever fires once, at pairing time. Without this, overdue_senders()
+    would eventually flag every paired sender as overdue regardless of
+    whether it's still sending fine - the registry would only ever prove
+    "we once paired," not "still alive." No auth needed here: this reads
+    the receiver's own already-unpacked files (receiver.py's
+    Receiver._record_heartbeat()), not a network request.
+
+    A device_id the registry has never seen (e.g. a config that embeds one
+    without having gone through /pair) is recorded fresh rather than
+    dropped, so it starts being tracked from its first real arrival.
+    """
+    if not device_id:
+        return
+    registry = _load_registry(path)
+    now = time.time()
+    entry = dict(registry.get(device_id, {}))
+    entry["last_seen"] = now
+    entry.setdefault("first_seen", now)
+    entry.setdefault("device_name", device_id)
+    if interval_minutes:
+        entry["interval_minutes"] = interval_minutes
+    registry[device_id] = entry
+    _save_registry(path, registry)
+
+
 def overdue_senders(registry: dict, now: float | None = None, grace: float = 1.5) -> list[dict]:
     """Which known senders are overdue for their expected interval - the
     receiver home screen's silence-detection banner reads this, independent

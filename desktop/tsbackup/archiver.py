@@ -11,8 +11,10 @@ reason this project exists is to preserve exactly those.
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -74,12 +76,21 @@ def prune_local(work_dir: str, source_dir: str, keep: int,
 def create_archive(source_dir: str, work_dir: str, level: int,
                    progress: Callable[[int], None] | None = None,
                    cancelled: Callable[[], bool] | None = None,
-                   log: Callable[[str], None] | None = None) -> ArchiveResult:
+                   log: Callable[[str], None] | None = None,
+                   identity: dict | None = None) -> ArchiveResult:
     """Compress source_dir whole into work_dir, named by the current time.
 
     progress(percent) is called as files are added, so the UI can show a real
     bar rather than a spinner. cancelled() lets a stop request abandon a run
     partway without leaving the half-written archive behind.
+
+    identity, when given (device_id, interval_minutes), is written into the
+    archive as a small .ts_sender.json marker at the archive root - invisible
+    to the naming/pruning conventions above, which only ever look at the
+    .7z filename, never inside it. The receiver reads this back after
+    unpacking to attribute an ordinary scheduled arrival to a paired sender
+    for silence detection (tsbackup/pairing.py's known_senders.json) - see
+    Receiver._record_heartbeat() in receiver.py.
     """
     src = Path(source_dir)
     if not src.is_dir():
@@ -121,6 +132,14 @@ def create_archive(source_dir: str, work_dir: str, level: int,
                         log(f"건너뜀(잠김): {arc_path} ({exc})")
                 if progress and index % 50 == 0:
                     progress(int(index * 100 / total))
+            if identity:
+                fd, tmp_name = tempfile.mkstemp(suffix=".json")
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                        json.dump(identity, fh)
+                    archive.write(tmp_name, ".ts_sender.json")
+                finally:
+                    Path(tmp_name).unlink(missing_ok=True)
         if progress:
             progress(100)
     except Exception as exc:  # noqa: BLE001 - report anything, never crash the loop

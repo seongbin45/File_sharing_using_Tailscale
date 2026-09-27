@@ -337,6 +337,114 @@ def test_pairing():
         listener.stop()
 
 
+def test_heartbeat_on_real_arrival():
+    section("silence-detection registry updates on a real (non-pairing) arrival")
+    from tsbackup import pairing
+    from tsbackup.transports import base
+
+    base._REGISTRY["fake"] = _FakeTransport
+    _FakeTransport.calls = []
+    _FakeTransport.should_fail = False
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        src = make_tree(root)
+        work = root / "work"
+        incoming = root / "incoming"
+        unpack = root / "unpack"
+        incoming.mkdir()
+
+        known_path = root / pairing.KNOWN_SENDERS_FILENAME
+        pairing._save_registry(known_path, {
+            "dev-heartbeat": {
+                "device_name": "sender-heartbeat", "interval_minutes": 60,
+                "first_seen": time.time() - 999999, "last_seen": time.time() - 999999,
+            },
+        })
+        stale_last_seen = pairing.load_known_senders(known_path)["dev-heartbeat"]["last_seen"]
+
+        # A paired sender's ordinary run - not the wizard's test-transfer -
+        # embeds its device_id via AppConfig.device_id, exactly as
+        # engine_core.run_sender_once() does for any config that has one.
+        _FakeTransport.inbox = incoming
+        cfg = AppConfig()
+        cfg.device_id = "dev-heartbeat"
+        cfg.sender = SenderConfig(source_dir=str(src), work_dir=str(work), level=1,
+                                  keep_local=1, transport="fake", interval_minutes=60)
+        result = engine_core.run_sender_once(cfg, lambda _l: None)
+        check("real run succeeds", result.ok, result.detail)
+        _FakeTransport.inbox = None
+
+        rcfg = AppConfig()
+        rcfg.role = "receiver"
+        rcfg.receiver.incoming_dir = str(incoming)
+        rcfg.receiver.unpack_dir = str(unpack)
+
+        # Point receiver.py's own config_dir() lookup at this test's temp
+        # registry rather than the real %LOCALAPPDATA%/~/.config path, for
+        # the whole scan (the actual unpack - and _record_heartbeat call -
+        # happens on the SECOND scan_once(), once the settle check passes).
+        import tsbackup.receiver as receiver_module
+        real_config_dir = receiver_module.config_dir
+        receiver_module.config_dir = lambda: root
+        try:
+            receiver = Receiver(rcfg, lambda _l: None)
+            receiver.scan_once()
+            time.sleep(0.05)
+            receiver.scan_once()
+        finally:
+            receiver_module.config_dir = real_config_dir
+
+        updated = pairing.load_known_senders(known_path)
+        check("known sender's last_seen advances on a real arrival",
+              updated["dev-heartbeat"]["last_seen"] > stale_last_seen, updated)
+        check("interval_minutes carries through from the archive's marker",
+              updated["dev-heartbeat"]["interval_minutes"] == 60, updated)
+
+        no_longer_overdue = pairing.overdue_senders(updated)
+        check("the sender is no longer overdue after a real arrival",
+              not any(d["device_id"] == "dev-heartbeat" for d in no_longer_overdue),
+              no_longer_overdue)
+
+        section("an un-paired config (no device_id) sends no marker, updates nothing")
+        # Fresh work/incoming/unpack (src is reused, harmlessly - only read,
+        # never written), not a reuse of the ones above: _unpack()'s
+        # destination folder name is derived only from the archive's
+        # timestamp stamp, not the source folder's name, so a second run
+        # within the same test-minute sharing incoming/unpack would extract
+        # on top of the first run's already-unpacked .ts_sender.json and
+        # defeat the very thing this checks.
+        work2 = root / "work2"
+        incoming2 = root / "incoming2"
+        unpack2 = root / "unpack2"
+        incoming2.mkdir()
+
+        _FakeTransport.inbox = incoming2
+        cfg_unpaired = AppConfig()
+        cfg_unpaired.sender = SenderConfig(source_dir=str(src), work_dir=str(work2), level=1,
+                                           keep_local=1, transport="fake")
+        engine_core.run_sender_once(cfg_unpaired, lambda _l: None)
+        _FakeTransport.inbox = None
+
+        rcfg2 = AppConfig()
+        rcfg2.role = "receiver"
+        rcfg2.receiver.incoming_dir = str(incoming2)
+        rcfg2.receiver.unpack_dir = str(unpack2)
+
+        before = pairing.load_known_senders(known_path)
+        receiver_module.config_dir = lambda: root
+        try:
+            receiver_unpaired = Receiver(rcfg2, lambda _l: None)
+            receiver_unpaired.scan_once()
+            time.sleep(0.05)
+            receiver_unpaired.scan_once()
+        finally:
+            receiver_module.config_dir = real_config_dir
+        after = pairing.load_known_senders(known_path)
+        check("registry is unchanged by an un-paired sender's arrival",
+              after == before, (before, after))
+
+
 def test_overdue_senders():
     section("silence detection (tsbackup.pairing.overdue_senders)")
     from tsbackup import pairing
@@ -631,6 +739,7 @@ if __name__ == "__main__":
     test_config_migrations()
     test_retry_state()
     test_pairing()
+    test_heartbeat_on_real_arrival()
     test_overdue_senders()
     test_run_test_transfer()
     test_hostkeys()

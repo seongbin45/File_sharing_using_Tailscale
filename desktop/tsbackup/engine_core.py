@@ -82,9 +82,17 @@ def run_sender_once(cfg, log: LogFn,
         if progress:
             progress("compress", p)
 
+    # Only a paired install has a device_id - an un-paired manual config
+    # simply sends no marker, and the receiver treats a missing one as
+    # "can't attribute this arrival," never as a reason to guess.
+    identity = None
+    if getattr(cfg, "device_id", ""):
+        identity = {"device_id": cfg.device_id, "interval_minutes": s.interval_minutes}
+
     result = archiver.create_archive(
         s.source_dir, s.work_dir, s.level,
         progress=comp_progress, cancelled=cancelled, log=log,
+        identity=identity,
     )
     if not result.ok:
         log(f"압축 실패: {result.error}")
