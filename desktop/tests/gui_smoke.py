@@ -351,7 +351,16 @@ def test_pairing_code_dialog(app: QApplication, root: Path) -> None:
 
 def main() -> int:
     app = QApplication.instance() or QApplication(sys.argv)
-    with tempfile.TemporaryDirectory() as tmp:
+    # ignore_cleanup_errors (3.10+): every individual check already passed
+    # by the time this dir is deleted - if some file inside it is still
+    # transiently locked (an AV scan, a not-yet-released OS handle from one
+    # of the many Qt widgets these tests construct), that's not a test
+    # failure worth crashing over. Seen for real: a first CI run here died
+    # with zero output and exit code 1 right at this cleanup boundary, no
+    # traceback captured - the print()/FAILURES summary below now also
+    # runs *before* cleanup, not after, so the actual pass/fail verdict
+    # survives even if directory deletion has trouble on the way out.
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         root = Path(tmp)
         test_main_window_both_roles(app, root)
         test_role_switch_rebuild(app, root)
@@ -364,14 +373,18 @@ def main() -> int:
         test_wizard_close_routes_through_reject(app, root)
         test_pairing_code_dialog(app, root)
 
-    print()
-    if FAILURES:
-        print(f"FAILED: {len(FAILURES)}")
-        for name in FAILURES:
-            print("  -", name)
-        return 1
-    print("all checks passed")
-    return 0
+        print()
+        if FAILURES:
+            print(f"FAILED: {len(FAILURES)}")
+            for name in FAILURES:
+                print("  -", name)
+            result = 1
+        else:
+            print("all checks passed")
+            result = 0
+        sys.stdout.flush()
+
+    return result
 
 
 if __name__ == "__main__":
