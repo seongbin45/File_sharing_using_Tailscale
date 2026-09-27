@@ -390,17 +390,27 @@ def main() -> int:
 
 if __name__ == "__main__":
     _code = main()
-    # Real evidence, not a guess: the third CI run printed "all checks
-    # passed" cleanly, then died with exit code 1 ~130ms later with zero
-    # further output - no traceback, nothing. That gap is a normal Python
-    # interpreter shutdown (raise SystemExit -> module/object teardown),
-    # and this class of "crashes only on exit, never mid-run" symptom is a
-    # known PySide6/Qt issue: QApplication's C++-owned widgets getting
-    # destroyed through Python's GC in an order Qt itself doesn't like.
-    # Every result this script produces is already printed and flushed by
-    # this point, so there is nothing left for a graceful shutdown to buy -
-    # skip it and exit at the OS level, bypassing whatever in Qt's/PySide6's
-    # teardown was crashing.
     sys.stdout.flush()
     sys.stderr.flush()
+    # Real evidence, not a guess: CI printed "all checks passed" cleanly,
+    # then died with exit code 1 ~130-190ms later with zero further
+    # output - no traceback, nothing - on FOUR consecutive runs. Switching
+    # `raise SystemExit(main())` to `os._exit(_code)` (skips Python's own
+    # cleanup/GC/atexit entirely) changed *nothing* - same crash, same gap.
+    # That rules out a Python-level teardown problem. What os._exit()
+    # does NOT skip on Windows is the OS's own process-exit path: the C
+    # runtime's underlying _exit()/ExitProcess() still sends
+    # DLL_PROCESS_DETACH to every loaded DLL (Qt's, PySide6's native
+    # modules, shiboken6) as the process unloads - outside Python's
+    # control for any exit path except one. TerminateProcess() is
+    # documented to skip DLL_PROCESS_DETACH notification for the
+    # terminating process's own DLLs - the standard PyInstaller/PySide/
+    # PyQt escape hatch for exactly this "crashes only on exit" symptom.
+    # Every real result is already printed and flushed above, so there is
+    # nothing a graceful (or even os._exit-graceful) shutdown still buys.
+    if sys.platform == "win32":
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        kernel32.TerminateProcess(kernel32.GetCurrentProcess(), _code)
     os._exit(_code)
