@@ -14,6 +14,14 @@ from typing import Callable
 from . import archiver
 from .transports import build as build_transport
 
+# A failed run retries at this short interval, up to this many times, before
+# falling back to waiting for the next full `interval_minutes` - otherwise a
+# 04:00 failure gets no second try until the whole period (12h by default)
+# has passed again. See next_retry_state() below for the actual decision;
+# engine.py only wires it to Qt timers.
+RETRY_INTERVAL_MINUTES = 20
+MAX_RETRIES = 3
+
 
 @dataclass
 class RunResult:
@@ -23,6 +31,30 @@ class RunResult:
     seconds: float = 0.0
     transport: str = ""
     detail: str = ""
+
+
+def next_retry_state(
+    ok: bool, retry_count: int, max_retries: int = MAX_RETRIES
+) -> tuple[str, int]:
+    """Decide what happens after one run, independent of Qt so it can be
+    tested headlessly (engine.py's Engine wraps this with actual timers).
+
+    Returns (action, new_retry_count):
+      "reset"     - success (or the caller isn't retrying at all): schedule
+                    the normal next run, counter back to zero.
+      "retry"     - failure, retries remain: schedule a short retry.
+      "exhausted" - failure, retries just ran out: notify once, then fall
+                    back to the normal schedule with the counter reset - the
+                    same effective outcome as "reset", but the caller should
+                    fire its one failure notification here, not on every
+                    individual failed attempt.
+    """
+    if ok:
+        return "reset", 0
+    retry_count += 1
+    if retry_count <= max_retries:
+        return "retry", retry_count
+    return "exhausted", 0
 
 
 # phase is one of: "compress", "transfer" - lets the UI label the bar.
@@ -50,9 +82,17 @@ def run_sender_once(cfg, log: LogFn,
         if progress:
             progress("compress", p)
 
+    # Only a paired install has a device_id - an un-paired manual config
+    # simply sends no marker, and the receiver treats a missing one as
+    # "can't attribute this arrival," never as a reason to guess.
+    identity = None
+    if getattr(cfg, "device_id", ""):
+        identity = {"device_id": cfg.device_id, "interval_minutes": s.interval_minutes}
+
     result = archiver.create_archive(
         s.source_dir, s.work_dir, s.level,
         progress=comp_progress, cancelled=cancelled, log=log,
+        identity=identity,
     )
     if not result.ok:
         log(f"압축 실패: {result.error}")

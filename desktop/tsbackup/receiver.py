@@ -18,6 +18,7 @@ opened mid-transfer.
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from pathlib import Path
@@ -25,7 +26,9 @@ from typing import Callable
 
 import py7zr
 
+from . import pairing
 from .archiver import STAMP_RE
+from .config import config_dir
 
 SETTLE_SECONDS = 3       # size must be unchanged this long before unpacking
 POLL_SECONDS = 5
@@ -76,7 +79,7 @@ class Receiver:
         self._sizes[path.name] = (size, now)
         if prev is None or prev[0] != size:
             return False
-        return (now - prev[1]) >= 0  # unchanged since last poll; poll gap ~5s
+        return (now - prev[1]) >= SETTLE_SECONDS
 
     def _unpack(self, path: Path) -> bool:
         stamp = _stamp_of(path.name)
@@ -90,6 +93,7 @@ class Receiver:
             self.log(f"압축 해제 실패: {path.name} ({exc})")
             return False
         self.log(f"압축 해제 완료: {dest}")
+        self._record_heartbeat(dest)
         if self.cfg.receiver.delete_after_unpack:
             try:
                 path.unlink()
@@ -97,6 +101,26 @@ class Receiver:
             except OSError as exc:
                 self.log(f"수신 압축 삭제 실패: {path.name} ({exc})")
         return True
+
+    def _record_heartbeat(self, dest: Path) -> None:
+        """A paired sender embeds a .ts_sender.json marker (archiver.py's
+        `identity` param) in every archive it sends - not just the wizard's
+        test-transfer. Reading it back here is what keeps
+        known_senders.json's last_seen current for silence detection
+        (pairing.overdue_senders()) after the one-time pairing handshake."""
+        marker = dest / ".ts_sender.json"
+        if not marker.exists():
+            return
+        try:
+            info = json.loads(marker.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            self.log(f"짝 정보 읽기 실패: {exc}")
+            return
+        device_id = str(info.get("device_id", "")).strip()
+        if not device_id:
+            return
+        known_path = config_dir() / pairing.KNOWN_SENDERS_FILENAME
+        pairing.record_heartbeat(known_path, device_id, info.get("interval_minutes"))
 
     # ---------------------------------------------------------------- http
 

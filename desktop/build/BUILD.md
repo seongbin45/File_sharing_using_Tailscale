@@ -116,14 +116,21 @@ git push origin v0.1.0
 
 1. `windows-latest` 체크아웃, Python 설치
 2. `desktop/requirements.txt` 설치, 순수 코어 셀프테스트
-3. `desktop/` 에서 `pyinstaller build/tsbackup.spec` → `TsBackup.exe`
-4. `TsBackup.exe --config`/`--check-gui` 로 그 바이너리 자체를 확인
-5. 태그에서 버전 뽑기(없으면 `0.0.0`) → `iscc /DMyAppVersion=... build\tsbackup.iss`
+3. **GUI 스모크 테스트**(`python -m tests.gui_smoke`) — 소스 트리에서
+   `MainWindow`(양쪽 역할)·`SettingsDialog`·`Tray`·`SetupWizard` 를 실제로
+   만들고 배선을 확인합니다(역할 전환 재구성, 설정의 고급 섹션 접기,
+   트레이의 실패 알림 아이콘 상태, 마법사의 연결 불가 코드 처리) — 뒤에
+   나오는 `--check-gui` 는 굳어진 바이너리의 임포트만 확인하는 것과 다름.
+   빌드 전에 두어 GUI 회귀는 여러 분 걸리는 빌드를 기다리지 않고 바로
+   잡힙니다.
+4. `desktop/` 에서 `pyinstaller build/tsbackup.spec` → `TsBackup.exe`
+5. `TsBackup.exe --config`/`--check-gui` 로 그 바이너리 자체를 확인
+6. 태그에서 버전 뽑기(없으면 `0.0.0`) → `iscc /DMyAppVersion=... build\tsbackup.iss`
    → `TsBackup-Setup.exe`
-6. 그 설치 파일을 조용히 설치(`/CURRENTUSER`)한 뒤 **설치된** 경로에서
+7. 그 설치 파일을 조용히 설치(`/CURRENTUSER`)한 뒤 **설치된** 경로에서
    다시 `--config`/`--check-gui` — 설치 파일이 컴파일만 된 게 아니라 실제로
    설치되고 도는지까지 확인
-7. `desktop/dist/TsBackup-Setup.exe` 를 그 태그의 GitHub 릴리스에 업로드
+8. `desktop/dist/TsBackup-Setup.exe` 를 그 태그의 GitHub 릴리스에 업로드
 
 태그 이름이 곧 버전입니다. `desktop/tsbackup/__init__.py` 의 `__version__` 과
 맞춰 두면 릴리스 노트에서 헷갈리지 않습니다.

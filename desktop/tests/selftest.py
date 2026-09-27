@@ -34,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tsbackup import archiver, engine_core  # noqa: E402
 from tsbackup.config import AppConfig, SenderConfig  # noqa: E402
-from tsbackup.receiver import Receiver  # noqa: E402
+from tsbackup.receiver import SETTLE_SECONDS, Receiver  # noqa: E402
 from tsbackup.transports import base  # noqa: E402
 
 FAILURES: list[str] = []
@@ -121,10 +121,465 @@ def test_config_roundtrip():
     cfg = AppConfig()
     check("empty sender reports problems", len(cfg.problems()) > 0)
     cfg.role = "receiver"
-    cfg.sender.transport = "http"
+    cfg.receiver.expects_http = True
     check("http receiver without token is refused",
           any("토큰" in p for p in cfg.problems()))
     check("http receiver uses http server", cfg.receiver_uses_http())
+
+
+def test_config_migrations():
+    section("config migrations")
+    with tempfile.TemporaryDirectory() as tmp:
+        # A config saved by a version before `onboarded` existed must load
+        # as already onboarded - an existing working install must never be
+        # sent through the first-run wizard on upgrade.
+        pre_existing = {
+            "role": "sender",
+            "sender": {"source_dir": "x", "work_dir": "y"},
+            "receiver": {},
+        }
+        path = Path(tmp) / "pre_existing.json"
+        path.write_text(json.dumps(pre_existing), encoding="utf-8")
+        loaded = AppConfig.load(path)
+        check("pre-existing config loads as onboarded", loaded.onboarded is True)
+
+        # A genuinely fresh install (no file at all) must still see the
+        # wizard.
+        fresh = AppConfig.load(Path(tmp) / "missing.json")
+        check("fresh install is not onboarded", fresh.onboarded is False)
+
+        # The old receiver_uses_http() misread (checking sender.transport on
+        # a receiver box) must migrate to expects_http, so an install
+        # already relying on that coincidence keeps receiving over HTTP
+        # after the bug is fixed rather than going silently deaf.
+        old_http_receiver = {
+            "role": "receiver",
+            "sender": {"transport": "http"},
+            "receiver": {"incoming_dir": "x", "unpack_dir": "y"},
+        }
+        path2 = Path(tmp) / "old_http_receiver.json"
+        path2.write_text(json.dumps(old_http_receiver), encoding="utf-8")
+        migrated = AppConfig.load(path2)
+        check("old http-receiver workaround migrates to expects_http",
+              migrated.receiver.expects_http is True)
+
+        # A config that already has expects_http explicit (even False) must
+        # not be overridden by the migration.
+        explicit_false = {
+            "role": "receiver",
+            "sender": {"transport": "http"},
+            "receiver": {"incoming_dir": "x", "unpack_dir": "y", "expects_http": False},
+        }
+        path3 = Path(tmp) / "explicit.json"
+        path3.write_text(json.dumps(explicit_false), encoding="utf-8")
+        not_migrated = AppConfig.load(path3)
+        check("explicit expects_http is not overridden by migration",
+              not_migrated.receiver.expects_http is False)
+
+
+def test_retry_state():
+    section("retry/backoff decision")
+    from tsbackup.engine_core import next_retry_state
+
+    check("success resets the counter",
+          next_retry_state(True, 2) == ("reset", 0))
+    check("first failure schedules a retry",
+          next_retry_state(False, 0) == ("retry", 1))
+    check("second failure schedules a retry",
+          next_retry_state(False, 1) == ("retry", 2))
+    check("third failure (at the limit) still retries",
+          next_retry_state(False, 2) == ("retry", 3))
+    check("fourth failure exhausts retries and resets the counter",
+          next_retry_state(False, 3) == ("exhausted", 0))
+    check("a success right after exhaustion still resets cleanly",
+          next_retry_state(True, 0) == ("reset", 0))
+
+
+def test_pairing():
+    section("pairing code encode/decode")
+    from tsbackup import pairing
+
+    for ip, secret in [
+        ("100.64.0.0", 0),
+        ("100.127.255.255", (1 << pairing.SECRET_BITS) - 1),
+        ("100.84.12.31", 12345),
+    ]:
+        code = pairing.pack_code(ip, secret)
+        back_ip, back_secret = pairing.unpack_code(code)
+        check(f"round-trip {ip}/{secret}", (back_ip, back_secret) == (ip, secret))
+        check(f"code is {pairing.CODE_CHARS} characters (plus one dash)",
+              len(code) == pairing.CODE_CHARS + 1, code)
+
+    try:
+        pairing.pack_code("192.168.1.1", 1)
+        check("a non-CGNAT ip is refused", False, "it packed anyway")
+    except pairing.PairingError:
+        check("a non-CGNAT ip is refused", True)
+
+    try:
+        pairing.unpack_code("TOO-SHORT")
+        check("a wrong-length code is refused", False, "it decoded anyway")
+    except pairing.PairingError:
+        check("a wrong-length code is refused", True)
+
+    section("pairing exchange (listener + sender-side handlers)")
+    import hashlib
+    import tempfile
+    import time
+    from pathlib import Path
+
+    from tsbackup.config import AppConfig
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        incoming = root / "incoming"
+        incoming.mkdir()
+        unpack = root / "unpack"
+        unpack.mkdir()
+        known_path = root / "known_senders.json"
+
+        cfg = AppConfig()
+        cfg.role = "receiver"
+        cfg.receiver.incoming_dir = str(incoming)
+        cfg.receiver.unpack_dir = str(unpack)
+
+        listener = pairing.PairingListener(cfg, known_path, log=lambda _m: None)
+        # No real Tailscale interface in this sandbox to bind to - exercise
+        # the handler logic directly (what do_POST calls into) rather than
+        # a real socket; a real bind is proven manually against a live
+        # Tailscale-connected machine, per the plan's Phase 3 manual check.
+        listener._tailscale_ip = "100.90.1.2"
+        code = listener.regenerate()
+        check("generated code decodes to the listener's own ip",
+              pairing.unpack_code(code)[0] == "100.90.1.2")
+
+        payload = listener._handle_pair({
+            "secret": listener._session.secret,
+            "device_name": "sender-1",
+            "device_id": "dev-abc",
+            "interval_minutes": 60,
+            "transport_preference": "taildrop",
+        })
+        check("pair response carries the receiver's incoming_dir",
+              payload.get("incoming_dir") == str(incoming))
+        check("pair response carries a confirm_token", bool(payload.get("confirm_token")))
+
+        registry = pairing.load_known_senders(known_path)
+        check("paired sender is recorded in known_senders.json",
+              registry.get("dev-abc", {}).get("device_name") == "sender-1", registry)
+
+        # Exercise the real incoming -> settle -> unpack pipeline (not a file
+        # dropped straight into unpack_dir) - _confirm_test_file() has to
+        # scan twice on the same Receiver instance for scan_once()'s settle
+        # check to ever unpack anything (a single call on a fresh instance
+        # has no prior size to compare against and always skips).
+        content = b"pairing self-test payload"
+        digest = hashlib.sha256(content).hexdigest()
+        archive_path = incoming / "PycharmProjects_2026_01_01_00_00.7z"
+        import py7zr
+        probe_src = root / "probe_src"
+        probe_src.mkdir()
+        (probe_src / "pair_test.bin").write_bytes(content)
+        with py7zr.SevenZipFile(archive_path, "w") as archive:
+            archive.writeall(probe_src, "PycharmProjects")
+
+        ok_resp = listener._handle_confirm({
+            "confirm_token": payload["confirm_token"],
+            "test_name": "pair_test.bin",
+            "expected_hash": digest,
+        })
+        check("confirm unpacks the real archive and matches the test file",
+              ok_resp.get("match") is True)
+        check("archive was actually unpacked, not just hash-compared in place",
+              any(unpack.rglob("pair_test.bin")))
+
+        bad_resp = listener._handle_confirm({
+            "confirm_token": payload["confirm_token"],
+            "test_name": "pair_test.bin",
+            "expected_hash": "0" * 64,
+        })
+        check("confirm reports no match for a wrong hash", bad_resp.get("match") is False)
+
+        section("pairing: single-use, wrong-attempt lockout, expiry")
+        try:
+            listener._handle_pair({"secret": listener._session.secret,
+                                    "device_name": "x", "device_id": "y"})
+            check("a used code is refused on a second /pair", False, "it paired again")
+        except pairing.PairingError:
+            check("a used code is refused on a second /pair", True)
+
+        listener.regenerate()
+        for _ in range(pairing.MAX_WRONG_ATTEMPTS):
+            time.sleep(pairing.MIN_REQUEST_INTERVAL + 0.05)
+            try:
+                listener._handle_pair({"secret": -1, "device_name": "x", "device_id": "y"})
+            except pairing.PairingError:
+                pass
+        check(f"{pairing.MAX_WRONG_ATTEMPTS} wrong attempts increments the counter",
+              listener._session.wrong_attempts == pairing.MAX_WRONG_ATTEMPTS)
+        time.sleep(pairing.MIN_REQUEST_INTERVAL + 0.05)
+        try:
+            listener._handle_pair({"secret": listener._session.secret,
+                                    "device_name": "x", "device_id": "y"})
+            check("the code is locked out even with the correct secret", False, "it paired")
+        except pairing.PairingError as exc:
+            check("the code is locked out even with the correct secret", "폐기" in str(exc), str(exc))
+
+        listener.regenerate()
+        listener._session.created_at = time.time() - pairing.CODE_TTL_SECONDS - 1
+        try:
+            listener._handle_pair({"secret": listener._session.secret,
+                                    "device_name": "x", "device_id": "y"})
+            check("an expired code is refused", False, "it paired")
+        except pairing.PairingError as exc:
+            check("an expired code is refused", "만료" in str(exc), str(exc))
+
+        listener.stop()
+
+
+def test_heartbeat_on_real_arrival():
+    section("silence-detection registry updates on a real (non-pairing) arrival")
+    from tsbackup import pairing
+    from tsbackup.transports import base
+
+    base._REGISTRY["fake"] = _FakeTransport
+    _FakeTransport.calls = []
+    _FakeTransport.should_fail = False
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        src = make_tree(root)
+        work = root / "work"
+        incoming = root / "incoming"
+        unpack = root / "unpack"
+        incoming.mkdir()
+
+        known_path = root / pairing.KNOWN_SENDERS_FILENAME
+        pairing._save_registry(known_path, {
+            "dev-heartbeat": {
+                "device_name": "sender-heartbeat", "interval_minutes": 60,
+                "first_seen": time.time() - 999999, "last_seen": time.time() - 999999,
+            },
+        })
+        stale_last_seen = pairing.load_known_senders(known_path)["dev-heartbeat"]["last_seen"]
+
+        # A paired sender's ordinary run - not the wizard's test-transfer -
+        # embeds its device_id via AppConfig.device_id, exactly as
+        # engine_core.run_sender_once() does for any config that has one.
+        _FakeTransport.inbox = incoming
+        cfg = AppConfig()
+        cfg.device_id = "dev-heartbeat"
+        cfg.sender = SenderConfig(source_dir=str(src), work_dir=str(work), level=1,
+                                  keep_local=1, transport="fake", interval_minutes=60)
+        result = engine_core.run_sender_once(cfg, lambda _l: None)
+        check("real run succeeds", result.ok, result.detail)
+        _FakeTransport.inbox = None
+
+        rcfg = AppConfig()
+        rcfg.role = "receiver"
+        rcfg.receiver.incoming_dir = str(incoming)
+        rcfg.receiver.unpack_dir = str(unpack)
+
+        # Point receiver.py's own config_dir() lookup at this test's temp
+        # registry rather than the real %LOCALAPPDATA%/~/.config path, for
+        # the whole scan (the actual unpack - and _record_heartbeat call -
+        # happens on the SECOND scan_once(), once the settle check passes).
+        import tsbackup.receiver as receiver_module
+        real_config_dir = receiver_module.config_dir
+        receiver_module.config_dir = lambda: root
+        try:
+            receiver = Receiver(rcfg, lambda _l: None)
+            receiver.scan_once()
+            time.sleep(SETTLE_SECONDS + 0.5)
+            receiver.scan_once()
+        finally:
+            receiver_module.config_dir = real_config_dir
+
+        updated = pairing.load_known_senders(known_path)
+        check("known sender's last_seen advances on a real arrival",
+              updated["dev-heartbeat"]["last_seen"] > stale_last_seen, updated)
+        check("interval_minutes carries through from the archive's marker",
+              updated["dev-heartbeat"]["interval_minutes"] == 60, updated)
+
+        no_longer_overdue = pairing.overdue_senders(updated)
+        check("the sender is no longer overdue after a real arrival",
+              not any(d["device_id"] == "dev-heartbeat" for d in no_longer_overdue),
+              no_longer_overdue)
+
+        section("an un-paired config (no device_id) sends no marker, updates nothing")
+        # Fresh work/incoming/unpack (src is reused, harmlessly - only read,
+        # never written), not a reuse of the ones above: _unpack()'s
+        # destination folder name is derived only from the archive's
+        # timestamp stamp, not the source folder's name, so a second run
+        # within the same test-minute sharing incoming/unpack would extract
+        # on top of the first run's already-unpacked .ts_sender.json and
+        # defeat the very thing this checks.
+        work2 = root / "work2"
+        incoming2 = root / "incoming2"
+        unpack2 = root / "unpack2"
+        incoming2.mkdir()
+
+        _FakeTransport.inbox = incoming2
+        cfg_unpaired = AppConfig()
+        cfg_unpaired.sender = SenderConfig(source_dir=str(src), work_dir=str(work2), level=1,
+                                           keep_local=1, transport="fake")
+        engine_core.run_sender_once(cfg_unpaired, lambda _l: None)
+        _FakeTransport.inbox = None
+
+        rcfg2 = AppConfig()
+        rcfg2.role = "receiver"
+        rcfg2.receiver.incoming_dir = str(incoming2)
+        rcfg2.receiver.unpack_dir = str(unpack2)
+
+        before = pairing.load_known_senders(known_path)
+        receiver_module.config_dir = lambda: root
+        try:
+            receiver_unpaired = Receiver(rcfg2, lambda _l: None)
+            receiver_unpaired.scan_once()
+            time.sleep(SETTLE_SECONDS + 0.5)
+            receiver_unpaired.scan_once()
+        finally:
+            receiver_module.config_dir = real_config_dir
+        after = pairing.load_known_senders(known_path)
+        check("registry is unchanged by an un-paired sender's arrival",
+              after == before, (before, after))
+
+
+def test_overdue_senders():
+    section("silence detection (tsbackup.pairing.overdue_senders)")
+    from tsbackup import pairing
+
+    now = 1_000_000.0
+    registry = {
+        "on-time": {"device_name": "a", "interval_minutes": 60, "last_seen": now - 60},
+        "late": {"device_name": "b", "interval_minutes": 60, "last_seen": now - 60 * 200},
+        "borderline-ok": {"device_name": "c", "interval_minutes": 60, "last_seen": now - 60 * 89},
+        "borderline-late": {"device_name": "d", "interval_minutes": 60, "last_seen": now - 60 * 91},
+        "no-interval-yet": {"device_name": "e", "last_seen": now - 60 * 1000},
+    }
+    overdue = pairing.overdue_senders(registry, now=now)
+    names = {d["device_name"] for d in overdue}
+    check("an on-time sender is not overdue", "a" not in names)
+    check("a very late sender is overdue", "b" in names)
+    check("just under 1.5x the interval is not yet overdue", "c" not in names)
+    check("just over 1.5x the interval is overdue", "d" in names)
+    check("a sender missing interval_minutes is skipped, not guessed at",
+          "e" not in names)
+    check("most overdue sorts first",
+          overdue[0]["device_name"] == "b" if overdue else False, overdue)
+
+
+def test_run_test_transfer():
+    section("wizard's test-transfer step (tsbackup.pairing.run_test_transfer)")
+    import tempfile
+    import threading
+
+    from tsbackup import pairing
+    from tsbackup.config import AppConfig
+    from tsbackup.transports import base
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        incoming = root / "incoming"
+        incoming.mkdir()
+        unpack = root / "unpack"
+        unpack.mkdir()
+        known = root / "known.json"
+
+        cfg_r = AppConfig()
+        cfg_r.role = "receiver"
+        cfg_r.receiver.incoming_dir = str(incoming)
+        cfg_r.receiver.unpack_dir = str(unpack)
+
+        listener = pairing.PairingListener(cfg_r, known)
+        server = pairing._PairingHTTPServer(
+            ("127.0.0.1", 0), pairing._PairingHandler, listener=listener
+        )
+        listener._server = server
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        port = server.server_address[1]
+
+        listener._tailscale_ip = "100.90.1.2"  # cosmetic only below
+        listener.regenerate()
+        secret = listener._session.secret
+
+        # This sandbox has no real Tailscale interface, so route the sender
+        # side's decoded ip at the real bound loopback port instead of the
+        # fixed PAIRING_PORT a real install would use - everything else
+        # (secret, handler logic, HTTP wire format) is exercised for real.
+        real_unpack_code = pairing.unpack_code
+        real_port = pairing.PAIRING_PORT
+        pairing.unpack_code = lambda code: ("127.0.0.1", secret)
+        pairing.PAIRING_PORT = port
+        try:
+            class _CopyToIncoming(base.Transport):
+                name = "_selftest_copy_to_incoming"
+
+                def send(self, archive_path, progress=None):
+                    import shutil
+                    shutil.copy(archive_path, incoming / archive_path.name)
+                    return base.TransferResult(True, "copied")
+
+            base._REGISTRY["_selftest_copy_to_incoming"] = _CopyToIncoming
+
+            pair_payload = listener._handle_pair({
+                "secret": secret, "device_name": "sender-x", "device_id": "dev-x",
+                "interval_minutes": 60, "transport_preference": "taildrop",
+            })
+
+            sender_cfg = AppConfig().sender
+            sender_cfg.transport = "_selftest_copy_to_incoming"
+
+            steps = []
+            ok, detail = pairing.run_test_transfer(
+                sender_cfg, "IGNORED-CODE", pair_payload["confirm_token"],
+                step=lambda label, status: steps.append((label, status)),
+            )
+            check("test-transfer succeeds end to end (compress+send+confirm)",
+                  ok, detail)
+            check("every step reports ok, in order",
+                  [s for s in steps if s[1] != "running"] ==
+                  [("압축", "ok"), ("전송", "ok"), ("수신·해제 확인", "ok")], steps)
+
+            # A wrong confirm_token must fail cleanly at the confirm step,
+            # not raise or silently report success.
+            bad_steps = []
+            bad_ok, bad_detail = pairing.run_test_transfer(
+                sender_cfg, "IGNORED-CODE", "wrong-token",
+                step=lambda label, status: bad_steps.append((label, status)),
+            )
+            check("a wrong confirm_token fails at the confirm step",
+                  not bad_ok and ("수신·해제 확인", "fail") in bad_steps, (bad_ok, bad_steps))
+        finally:
+            pairing.unpack_code = real_unpack_code
+            pairing.PAIRING_PORT = real_port
+            listener.stop()
+
+
+def test_hostkeys():
+    section("host key fingerprint (tsbackup/hostkeys.py)")
+    import paramiko
+
+    from tsbackup import hostkeys as hk
+
+    key = paramiko.RSAKey.generate(2048)
+    other = paramiko.RSAKey.generate(2048)
+    fp = hk.fingerprint(key)
+    check("fingerprint looks like ssh-keygen output",
+          fp.startswith("SHA256:") and len(fp) > 20, fp)
+
+    check("a fingerprint matches itself", hk.same(fp, fp))
+    check("a fingerprint mismatches a different key",
+          not hk.same(fp, hk.fingerprint(other)))
+
+    # People (and a pairing exchange payload) hand these around with or
+    # without the SHA256: prefix, and with or without base64 padding -
+    # webadmin/app/hostkeys.py tolerates the same variants, and this must
+    # keep matching it.
+    for variant in (fp[7:], fp + "=", fp.replace("SHA256:", "sha256:")):
+        check(f"tolerant of written form: {variant[:18]}...",
+              hk.same(fp, variant))
 
 
 def test_archiver_and_prune():
@@ -247,9 +702,11 @@ def test_receiver_unpack():
         rcfg.receiver.delete_after_unpack = True
         receiver = Receiver(rcfg, lambda _l: None)
 
-        # first scan records the size; a settled file unpacks on the next scan
+        # first scan records the size; a settled file unpacks on the next
+        # scan, once real time (not just a repeated poll) has passed the
+        # settle window - see receiver.py's _settled().
         receiver.scan_once()
-        time.sleep(0.05)
+        time.sleep(SETTLE_SECONDS + 0.5)
         done = receiver.scan_once()
         check("one archive unpacked", done == 1, done)
         folders = list(unpack.glob("PycharmProjects_*"))
@@ -281,6 +738,13 @@ def test_transport_registry():
 
 if __name__ == "__main__":
     test_config_roundtrip()
+    test_config_migrations()
+    test_retry_state()
+    test_pairing()
+    test_heartbeat_on_real_arrival()
+    test_overdue_senders()
+    test_run_test_transfer()
+    test_hostkeys()
     test_archiver_and_prune()
     test_progress_and_cancel()
     test_sender_pass_with_fallback()

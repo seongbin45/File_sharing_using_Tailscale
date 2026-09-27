@@ -60,6 +60,18 @@ jobs:
         # Fast, no Qt/network. If the logic is broken, fail before building.
         run: python -m tests.selftest
 
+      - name: GUI smoke test
+        # Actually constructs MainWindow (both roles), SettingsDialog, Tray,
+        # and SetupWizard and exercises their wiring (role-switch rebuild,
+        # the settings dialog's advanced-section disclosure, the tray's
+        # failure-notification icon state, the wizard's unreachable-code
+        # error path) - not just that they import, which is all the later
+        # --check-gui step on the frozen binary proves. Runs against the
+        # source tree with the same Python env "Install dependencies" set
+        # up, before spending time on the PyInstaller build below, so a GUI
+        # regression fails fast rather than after a multi-minute build.
+        run: python -m tests.gui_smoke
+
       - name: Build TsBackup.exe
         run: pyinstaller build/tsbackup.spec
 

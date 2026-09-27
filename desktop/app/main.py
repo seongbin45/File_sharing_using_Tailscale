@@ -90,6 +90,7 @@ def _check_gui_imports() -> int:
 
     from app.main_window import MainWindow  # noqa: F401
     from app.tray import Tray  # noqa: F401
+    from app.wizard import SetupWizard  # noqa: F401
 
     return 0
 
@@ -113,6 +114,18 @@ def _gui() -> int:
 
     cfg = AppConfig.load()
     log = Log(config_dir() / "tsbackup.log")
+
+    if not cfg.onboarded:
+        from app.wizard import SetupWizard
+
+        wizard = SetupWizard(cfg)
+        if wizard.exec() != SetupWizard.Accepted:
+            # The wizard is mandatory on a genuinely fresh install - closing
+            # it without finishing leaves nothing configured to run.
+            return 0
+        # wizard.accept() already wrote onboarded=True and saved; reload
+        # rather than trust the same in-memory object across that boundary.
+        cfg = AppConfig.load()
 
     from tsbackup.engine import Engine
     engine = Engine(cfg, log)

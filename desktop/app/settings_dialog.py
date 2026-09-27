@@ -6,6 +6,12 @@ receiver is not asked for a compression level. The transport row shows only the
 fields that transport needs - Taildrop wants device names, sftp/http want a
 host - because a form that asks for everything at once is how the wrong field
 gets filled in.
+
+Each box also splits into an always-visible basic section and a collapsed
+"고급" section behind a disclosure toggle - compression level, the http/sftp
+token, and the pinned host-key fingerprint are all fields whose default is
+normally the right answer (see _make_advanced_toggle), so they stay out of
+the way until someone has a reason to open them.
 """
 
 from __future__ import annotations
@@ -61,17 +67,17 @@ class SettingsDialog(QDialog):
     def _build_sender_box(self) -> QGroupBox:
         s = self.cfg.sender
         box = QGroupBox("보내는 쪽")
-        form = QFormLayout(box)
+        outer = QVBoxLayout(box)
+
+        basic = QWidget()
+        form = QFormLayout(basic)
+        form.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(basic)
 
         self.source_dir = self._dir_row(s.source_dir)
         form.addRow("대상 폴더", self.source_dir["w"])
         self.work_dir = self._dir_row(s.work_dir)
         form.addRow("작업 폴더", self.work_dir["w"])
-
-        self.level = QSpinBox()
-        self.level.setRange(0, 9)
-        self.level.setValue(s.level)
-        form.addRow("압축 수준 (LZMA2 0~9)", self.level)
 
         self.keep_local = QSpinBox()
         self.keep_local.setRange(0, 20)
@@ -115,8 +121,27 @@ class SettingsDialog(QDialog):
         form.addRow("사용자 (sftp)", self.username)
         self.remote_dir = QLineEdit(s.remote_dir)
         form.addRow("원격 폴더 (sftp)", self.remote_dir)
+
+        # ---- advanced: level, tokens, pinned host key - defaults are the
+        # right answer until there's a specific reason to change one.
+        adv = QWidget()
+        adv_form = QFormLayout(adv)
+        adv_form.setContentsMargins(0, 0, 0, 0)
+
+        self.level = QSpinBox()
+        self.level.setRange(0, 9)
+        self.level.setValue(s.level)
+        adv_form.addRow("압축 수준 (LZMA2 0~9)", self.level)
+
         self.http_token = QLineEdit(s.http_token)
-        form.addRow("토큰 (http)", self.http_token)
+        adv_form.addRow("토큰 (http)", self.http_token)
+
+        self.host_key = QLineEdit(s.host_key)
+        self.host_key.setPlaceholderText("비어 있으면 첫 연결 때 자동으로 등록됩니다 (TOFU)")
+        adv_form.addRow("호스트 키 지문 (sftp)", self.host_key)
+
+        outer.addWidget(self._make_advanced_toggle(adv, "고급 — 압축 수준, 토큰, 호스트 키"))
+        outer.addWidget(adv)
 
         self.sender_box = box
         return box
@@ -126,7 +151,12 @@ class SettingsDialog(QDialog):
     def _build_receiver_box(self) -> QGroupBox:
         r = self.cfg.receiver
         box = QGroupBox("받는 쪽")
-        form = QFormLayout(box)
+        outer = QVBoxLayout(box)
+
+        basic = QWidget()
+        form = QFormLayout(basic)
+        form.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(basic)
 
         self.incoming_dir = self._dir_row(r.incoming_dir)
         form.addRow("수신 폴더", self.incoming_dir["w"])
@@ -137,19 +167,50 @@ class SettingsDialog(QDialog):
         self.delete_after.setChecked(r.delete_after_unpack)
         form.addRow("", self.delete_after)
 
+        self.expects_http = QCheckBox("보내는 쪽이 HTTP로 보냅니다 (HTTP 수신 서버를 켭니다)")
+        self.expects_http.setChecked(r.expects_http)
+        form.addRow("", self.expects_http)
+
+        # ---- advanced: HTTP listener detail - only relevant once
+        # expects_http is on, and the defaults are fine until then.
+        adv = QWidget()
+        adv_form = QFormLayout(adv)
+        adv_form.setContentsMargins(0, 0, 0, 0)
+
         self.http_bind = QLineEdit(r.http_bind)
-        form.addRow("HTTP 바인딩 (http 수신)", self.http_bind)
+        adv_form.addRow("HTTP 바인딩", self.http_bind)
         self.http_port = QSpinBox()
         self.http_port.setRange(1, 65535)
         self.http_port.setValue(r.http_port)
-        form.addRow("HTTP 포트", self.http_port)
+        adv_form.addRow("HTTP 포트", self.http_port)
         self.recv_token = QLineEdit(r.http_token)
-        form.addRow("HTTP 토큰", self.recv_token)
+        adv_form.addRow("HTTP 토큰", self.recv_token)
+
+        outer.addWidget(self._make_advanced_toggle(adv, "고급 — HTTP 바인딩·포트·토큰"))
+        outer.addWidget(adv)
 
         self.receiver_box = box
         return box
 
     # --------------------------------------------------------------- util
+
+    def _make_advanced_toggle(self, advanced: QWidget, label: str) -> QPushButton:
+        """A disclosure button that shows/hides `advanced`, collapsed by
+        default. A flat QPushButton rather than QToolButton so the same
+        style works without extra icon assets (icons.py's rationale for
+        drawing icons in code applies here too - one fewer asset to bundle)."""
+        btn = QPushButton(f"▶ {label}")
+        btn.setCheckable(True)
+        btn.setFlat(True)
+        btn.setStyleSheet("text-align: left; border: none; color: #0067c0;")
+        advanced.setVisible(False)
+
+        def _toggle(checked: bool) -> None:
+            advanced.setVisible(checked)
+            btn.setText(f"{'▼' if checked else '▶'} {label}")
+
+        btn.toggled.connect(_toggle)
+        return btn
 
     def _dir_row(self, value: str) -> dict:
         w = QWidget()
@@ -181,6 +242,7 @@ class SettingsDialog(QDialog):
         self.username.setEnabled(t == "sftp")
         self.remote_dir.setEnabled(t == "sftp")
         self.http_token.setEnabled(t == "http")
+        self.host_key.setEnabled(t == "sftp")
 
     # -------------------------------------------------------------- apply
 
@@ -203,6 +265,7 @@ class SettingsDialog(QDialog):
         s.username = self.username.text().strip()
         s.remote_dir = self.remote_dir.text().strip()
         s.http_token = self.http_token.text().strip()
+        s.host_key = self.host_key.text().strip()
 
         r = cfg.receiver
         r.incoming_dir = self.incoming_dir["edit"].text().strip()
@@ -211,3 +274,4 @@ class SettingsDialog(QDialog):
         r.http_bind = self.http_bind.text().strip() or "127.0.0.1"
         r.http_port = self.http_port.value()
         r.http_token = self.recv_token.text().strip()
+        r.expects_http = self.expects_http.isChecked()
