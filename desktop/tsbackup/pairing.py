@@ -311,6 +311,12 @@ class PairingListener:
         self._thread = None
         self._session = None
 
+    def is_paired(self) -> bool:
+        """Whether the current code has been successfully used - the
+        wizard's receiver-side screen polls this to know when to stop
+        saying "대기 중" and let the person move on."""
+        return bool(self._session and self._session.paired)
+
     # ---------------------------------------------------------- http hooks
 
     def _handle_pair(self, body: dict) -> dict:
@@ -440,6 +446,96 @@ def confirm_test_transfer(
         "expected_hash": expected_hash,
     }, timeout)
     return bool(response.get("match"))
+
+
+def local_tailscale_ip() -> str | None:
+    """This machine's own Tailscale IPv4 address - needed to start a
+    receiver's pairing listener (bound to it, never 0.0.0.0) and to encode
+    it into the code shown on screen. None if the tailscale CLI isn't found
+    or the machine isn't connected to a tailnet; the wizard shows a clear
+    error rather than silently binding somewhere wrong."""
+    import subprocess
+
+    from .transports.taildrop import tailscale_binary
+
+    binary = tailscale_binary()
+    if not binary:
+        return None
+    try:
+        proc = subprocess.run(
+            [binary, "ip", "-4"], capture_output=True, text=True, timeout=10
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    lines = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
+    return lines[0] if lines else None
+
+
+def run_test_transfer(
+    sender_cfg, code: str, confirm_token: str,
+    step=lambda label, status: None,
+) -> tuple[bool, str]:
+    """The wizard's test-transfer step, independent of Qt so it can be
+    tested headlessly - app/wizard.py's _TestTransferWorker only wraps this
+    in a QThread and translates `step` calls into Qt signals.
+
+    Compresses a small synthetic probe file, sends it over the real
+    negotiated transport (sender_cfg.transport, already resolved by
+    resolve_and_pair), then asks the receiver to confirm it arrived and
+    unpacked correctly - a real file and a real round trip, not a
+    simulation, is what makes the checklist mean something.
+
+    `step(label, status)` is called with status one of "running"/"ok"/
+    "fail" for each of "압축", "전송", "수신·해제 확인". Returns (ok, detail).
+    """
+    import tempfile as _tempfile
+
+    from . import archiver
+    from .transports import build as build_transport
+
+    with _tempfile.TemporaryDirectory(prefix="ts_pair_test_src_") as src_dir, \
+         _tempfile.TemporaryDirectory(prefix="ts_pair_test_work_") as work_dir:
+        probe_name = f"probe_{secrets.token_hex(4)}.bin"
+        content = secrets.token_bytes(4096)
+        Path(src_dir, probe_name).write_bytes(content)
+        digest = hashlib.sha256(content).hexdigest()
+
+        step("압축", "running")
+        result = archiver.create_archive(src_dir, work_dir, level=1)
+        if not result.ok:
+            step("압축", "fail")
+            return False, f"압축 실패: {result.error}"
+        step("압축", "ok")
+
+        step("전송", "running")
+        try:
+            transport = build_transport(sender_cfg.transport, sender_cfg, lambda _m: None)
+        except ValueError as exc:
+            step("전송", "fail")
+            return False, str(exc)
+        try:
+            tr = transport.send(result.path)
+        finally:
+            transport.close()
+        if not tr.ok:
+            step("전송", "fail")
+            return False, f"전송 실패: {tr.detail}"
+        step("전송", "ok")
+
+        step("수신·해제 확인", "running")
+        try:
+            matched = confirm_test_transfer(code, confirm_token, probe_name, digest)
+        except PairingError as exc:
+            step("수신·해제 확인", "fail")
+            return False, str(exc)
+        if not matched:
+            step("수신·해제 확인", "fail")
+            return False, "받는 쪽에서 파일을 확인하지 못했습니다"
+        step("수신·해제 확인", "ok")
+
+    return True, ""
 
 
 def _post(ip: str, path: str, body: dict, timeout: float) -> dict:

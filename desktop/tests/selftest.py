@@ -337,6 +337,94 @@ def test_pairing():
         listener.stop()
 
 
+def test_run_test_transfer():
+    section("wizard's test-transfer step (tsbackup.pairing.run_test_transfer)")
+    import tempfile
+    import threading
+
+    from tsbackup import pairing
+    from tsbackup.config import AppConfig
+    from tsbackup.transports import base
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        incoming = root / "incoming"
+        incoming.mkdir()
+        unpack = root / "unpack"
+        unpack.mkdir()
+        known = root / "known.json"
+
+        cfg_r = AppConfig()
+        cfg_r.role = "receiver"
+        cfg_r.receiver.incoming_dir = str(incoming)
+        cfg_r.receiver.unpack_dir = str(unpack)
+
+        listener = pairing.PairingListener(cfg_r, known)
+        server = pairing._PairingHTTPServer(
+            ("127.0.0.1", 0), pairing._PairingHandler, listener=listener
+        )
+        listener._server = server
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        port = server.server_address[1]
+
+        listener._tailscale_ip = "100.90.1.2"  # cosmetic only below
+        listener.regenerate()
+        secret = listener._session.secret
+
+        # This sandbox has no real Tailscale interface, so route the sender
+        # side's decoded ip at the real bound loopback port instead of the
+        # fixed PAIRING_PORT a real install would use - everything else
+        # (secret, handler logic, HTTP wire format) is exercised for real.
+        real_unpack_code = pairing.unpack_code
+        real_port = pairing.PAIRING_PORT
+        pairing.unpack_code = lambda code: ("127.0.0.1", secret)
+        pairing.PAIRING_PORT = port
+        try:
+            class _CopyToIncoming(base.Transport):
+                name = "_selftest_copy_to_incoming"
+
+                def send(self, archive_path, progress=None):
+                    import shutil
+                    shutil.copy(archive_path, incoming / archive_path.name)
+                    return base.TransferResult(True, "copied")
+
+            base._REGISTRY["_selftest_copy_to_incoming"] = _CopyToIncoming
+
+            pair_payload = listener._handle_pair({
+                "secret": secret, "device_name": "sender-x", "device_id": "dev-x",
+                "interval_minutes": 60, "transport_preference": "taildrop",
+            })
+
+            sender_cfg = AppConfig().sender
+            sender_cfg.transport = "_selftest_copy_to_incoming"
+
+            steps = []
+            ok, detail = pairing.run_test_transfer(
+                sender_cfg, "IGNORED-CODE", pair_payload["confirm_token"],
+                step=lambda label, status: steps.append((label, status)),
+            )
+            check("test-transfer succeeds end to end (compress+send+confirm)",
+                  ok, detail)
+            check("every step reports ok, in order",
+                  [s for s in steps if s[1] != "running"] ==
+                  [("압축", "ok"), ("전송", "ok"), ("수신·해제 확인", "ok")], steps)
+
+            # A wrong confirm_token must fail cleanly at the confirm step,
+            # not raise or silently report success.
+            bad_steps = []
+            bad_ok, bad_detail = pairing.run_test_transfer(
+                sender_cfg, "IGNORED-CODE", "wrong-token",
+                step=lambda label, status: bad_steps.append((label, status)),
+            )
+            check("a wrong confirm_token fails at the confirm step",
+                  not bad_ok and ("수신·해제 확인", "fail") in bad_steps, (bad_ok, bad_steps))
+        finally:
+            pairing.unpack_code = real_unpack_code
+            pairing.PAIRING_PORT = real_port
+            listener.stop()
+
+
 def test_hostkeys():
     section("host key fingerprint (tsbackup/hostkeys.py)")
     import paramiko
@@ -519,6 +607,7 @@ if __name__ == "__main__":
     test_config_migrations()
     test_retry_state()
     test_pairing()
+    test_run_test_transfer()
     test_hostkeys()
     test_archiver_and_prune()
     test_progress_and_cancel()
