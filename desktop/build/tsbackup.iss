@@ -25,12 +25,15 @@ AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
-; Let the person installing choose per-user (no admin needed) vs
-; per-machine (Program Files, UAC prompt) at runtime, and let a
-; scripted/silent install pick via /CURRENTUSER or /ALLUSERS - the same
-; switch a future winget/Chocolatey manifest would use. {autopf} below
-; resolves to the right Program Files variant for whichever was chosen.
-PrivilegesRequired=lowest
+; Per-machine (Program Files, UAC prompt) is the default - most users just
+; want "install it," and it also means the firewall rule and (once shipped)
+; the auto-update NSSM services below apply with no extra prompt. A
+; per-user install (no admin needed) remains available as an explicit
+; opt-out via the wizard's dialog or an explicit /CURRENTUSER switch - the
+; same switches a future winget/Chocolatey manifest would use. {autopf}
+; below resolves to the right Program Files variant for whichever was
+; chosen.
+PrivilegesRequired=admin
 PrivilegesRequiredOverridesAllowed=dialog commandline
 OutputDir=..\dist
 OutputBaseFilename=TsBackup-Setup
@@ -41,6 +44,22 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 ; No .ico bundled here - same reasoning as tsbackup.spec: the app paints
 ; its own icon in code (app/icons.py), so the wizard just uses Inno's
 ; default and there's no icon file to keep in sync.
+
+[Dirs]
+; Lets the auto-update manager - which runs unelevated by design (a
+; per-user Startup-folder/login launch, never itself UAC-elevated) -
+; write into {app} even on a per-machine (admin, Program Files) install:
+; both creating {app}\UpdateManager\{status,pending} and atomically
+; replacing {app}\TsBackup.exe itself (NTFS's "Modify" permission set
+; includes FILE_DELETE_CHILD on the directory, which authorizes replacing
+; any child file regardless of that file's own ACL - the existing
+; TsBackup.exe doesn't need its own ACL touched). No-op on a per-user
+; install (already owned outright by the installing user). Same technique
+; other self-updating per-machine Windows apps use for the same reason
+; (e.g. Chrome) - the accepted tradeoff is that any local non-admin
+; account can also write here, acceptable given this app's one-operator-
+; per-PC framing (see README.md).
+Name: "{app}"; Permissions: users-modify
 
 [Files]
 Source: "..\dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
@@ -98,10 +117,11 @@ Filename: "{sys}\wscript.exe"; Parameters: "//B //Nologo ""{app}\TsBackup_update
 ; PAIRING_PORT - keep these in sync) - restricted to Tailscale's own CGNAT
 ; range and this app's exe, never a blanket allow. Needs admin rights to
 ; manage firewall rules at all, so this only runs - and only eliminates
-; the first-run Windows Firewall prompt - on a per-machine (admin) install.
-; A per-user install (this installer's other supported mode, since
-; PrivilegesRequired is "lowest") still shows that prompt on first bind;
-; that's an unavoidable Windows constraint, not a bug in this rule.
+; the first-run Windows Firewall prompt - on a per-machine (admin) install,
+; which is now the default (see PrivilegesRequired above). A per-user
+; install (still available via the wizard dialog or /CURRENTUSER) still
+; shows that prompt on first bind; that's an unavoidable Windows
+; constraint, not a bug in this rule.
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""TsBackup Pairing"" dir=in action=allow protocol=TCP localport=8781 remoteip=100.64.0.0/10 program=""{app}\{#MyAppExeName}"" enable=yes"; Flags: runhidden; Check: IsAdminInstallMode
 
 [UninstallRun]

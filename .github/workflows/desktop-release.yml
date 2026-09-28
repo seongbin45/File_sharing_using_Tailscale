@@ -135,11 +135,37 @@ jobs:
       - name: Build installer
         run: iscc /DMyAppVersion=${{ steps.ver.outputs.version }} build\tsbackup.iss
 
-      - name: Install and smoke-test the installer
-        # Proves the *installed* app actually runs from where the installer
-        # puts it, not just that the installer compiled. /CURRENTUSER runs
-        # the same per-user path a real user could pick interactively, but
-        # silently and without a UAC prompt, so it works unattended here.
+      - name: Install and smoke-test the installer (per-machine / admin)
+        # This is the installer's new *default* mode (PrivilegesRequired
+        # is now "admin" - tsbackup.iss), and the one that was actually
+        # broken on real hardware: the update manager runs unelevated
+        # (login-triggered) but {app} lands in Program Files, where
+        # Windows ACLs deny an unelevated write unless tsbackup.iss's
+        # [Dirs] "users-modify" grant is actually in effect. This pass is
+        # what would have caught that - it never ran before this fix.
+        shell: pwsh
+        run: |
+          Start-Process -FilePath ".\dist\TsBackup-Setup.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/ALLUSERS" -Wait
+          $installDir = "${env:ProgramFiles(x86)}\TsBackup"
+          if (!(Test-Path $installDir)) { $installDir = "$env:ProgramFiles\TsBackup" }
+          $installed = "$installDir\TsBackup.exe"
+          if (!(Test-Path $installed)) { throw "installed exe not found at $installed" }
+          & $installed --config
+          & $installed --check-gui
+          foreach ($name in @("TsBackup_update_manager.exe","TsBackup_update_manager.bat","TsBackup_update_manager_hidden.vbs","VERSION")) {
+            if (!(Test-Path "$installDir\$name")) { throw "missing installed file: $installDir\$name" }
+          }
+          $env:TSBACKUP_INSTALL_DIR = $installDir
+          # The actual regression check: this write (status_root's mkdir,
+          # by way of run_once()) previously failed with WinError 5 here.
+          & "$installDir\TsBackup_update_manager.exe" --once
+          if ($LASTEXITCODE -ne 0) { throw "update manager --once failed against admin install (exit $LASTEXITCODE)" }
+
+      - name: Install and smoke-test the installer (per-user override)
+        # /CURRENTUSER is still a supported opt-out of the new admin
+        # default (PrivilegesRequiredOverridesAllowed keeps allowing it) -
+        # keep this regression-tested too, into a separate install dir
+        # from the admin pass above.
         shell: pwsh
         run: |
           Start-Process -FilePath ".\dist\TsBackup-Setup.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/CURRENTUSER" -Wait
