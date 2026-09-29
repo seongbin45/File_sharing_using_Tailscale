@@ -113,14 +113,24 @@ jobs:
           .\dist\TsBackup_update_manager.exe --once
 
       - name: Determine version
-        # From the vX.Y.Z tag when this run was triggered by one; 0.0.0 for
+        # From the vX.Y.Z tag when this run was triggered by one; 99.0.0 for
         # a workflow_dispatch run with no tag context (e.g. validating the
-        # pipeline before cutting a release).
+        # pipeline before cutting a release). 99.0.0, not 0.0.0: the later
+        # "Install and smoke-test the installer" steps run the *real*
+        # update manager against this real installed VERSION and make a
+        # genuine network call to the real GitHub Releases API - once a
+        # real vX.Y.Z release exists with a matching TsBackup.exe asset
+        # (true from v0.3.0 onward), an 0.0.0 dev build looks older than
+        # it and the smoke test would perform a real live self-update
+        # (download + kill + replace + relaunch a persistent tray
+        # process) instead of just proving the binary runs. 99.0.0 keeps
+        # it always newer than any real release, so run_once() reports
+        # up_to_date and the smoke test stays a smoke test.
         id: ver
         shell: pwsh
         run: |
           $raw = "${{ github.ref_name }}"
-          if ($raw -match '^v(\d+\.\d+\.\d+)$') { $v = $matches[1] } else { $v = "0.0.0" }
+          if ($raw -match '^v(\d+\.\d+\.\d+)$') { $v = $matches[1] } else { $v = "99.0.0" }
           "version=$v" >> $env:GITHUB_OUTPUT
 
       - name: Write VERSION
@@ -159,7 +169,15 @@ jobs:
           # The actual regression check: this write (status_root's mkdir,
           # by way of run_once()) previously failed with WinError 5 here.
           & "$installDir\TsBackup_update_manager.exe" --once
-          if ($LASTEXITCODE -ne 0) { throw "update manager --once failed against admin install (exit $LASTEXITCODE)" }
+          $code = $LASTEXITCODE
+          Write-Host "update manager --once exit code: $code"
+          # console=False means a crash here is otherwise silent - dump
+          # its own log so a future failure doesn't need re-diagnosing
+          # from scratch (the log path is %LOCALAPPDATA%\TsBackup\, not
+          # $installDir).
+          $umLog = "$env:LOCALAPPDATA\TsBackup\update_manager.log"
+          if (Test-Path $umLog) { Write-Host "--- update_manager.log (tail) ---"; Get-Content $umLog -Tail 40 }
+          if ($code -ne 0) { throw "update manager --once failed against admin install (exit $code)" }
 
       - name: Install and smoke-test the installer (per-user override)
         # /CURRENTUSER is still a supported opt-out of the new admin
@@ -182,6 +200,11 @@ jobs:
           }
           $env:TSBACKUP_INSTALL_DIR = $installDir
           & "$installDir\TsBackup_update_manager.exe" --once
+          $code = $LASTEXITCODE
+          Write-Host "update manager --once exit code: $code"
+          $umLog = "$env:LOCALAPPDATA\TsBackup\update_manager.log"
+          if (Test-Path $umLog) { Write-Host "--- update_manager.log (tail) ---"; Get-Content $umLog -Tail 40 }
+          if ($code -ne 0) { throw "update manager --once failed against per-user install (exit $code)" }
 
       # Always keep the installer as a build artifact, even for
       # workflow_dispatch runs that are not tied to a tag.
