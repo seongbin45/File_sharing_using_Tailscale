@@ -168,15 +168,32 @@ jobs:
           $env:TSBACKUP_INSTALL_DIR = $installDir
           # The actual regression check: this write (status_root's mkdir,
           # by way of run_once()) previously failed with WinError 5 here.
-          & "$installDir\TsBackup_update_manager.exe" --once
-          $code = $LASTEXITCODE
+          # Start-Process -Wait -PassThru, not "&": the previous run saw
+          # $LASTEXITCODE come back blank (not 0, not nonzero - unset)
+          # after "&" against this console=False exe, with no new log
+          # line at all - i.e. the process may never have actually
+          # started. -PassThru gives a real process object with a real
+          # ExitCode, a clearer failure if CreateProcess itself is
+          # refused (AV/SmartScreen on a just-installed Program Files
+          # exe is the leading suspect), and Wait-Process as a backstop
+          # against Start-Process -Wait itself returning early.
+          $proc = Start-Process -FilePath "$installDir\TsBackup_update_manager.exe" -ArgumentList "--once" -PassThru
+          Wait-Process -Id $proc.Id -Timeout 60 -ErrorAction SilentlyContinue
+          $code = $proc.ExitCode
           Write-Host "update manager --once exit code: $code"
+          Write-Host "exe still present after run: $(Test-Path "$installDir\TsBackup_update_manager.exe")"
           # console=False means a crash here is otherwise silent - dump
           # its own log so a future failure doesn't need re-diagnosing
           # from scratch (the log path is %LOCALAPPDATA%\TsBackup\, not
-          # $installDir).
+          # $installDir). This file is shared across every step in this
+          # job (log_dir() ignores install_dir), so only the last few
+          # lines are this invocation's.
           $umLog = "$env:LOCALAPPDATA\TsBackup\update_manager.log"
-          if (Test-Path $umLog) { Write-Host "--- update_manager.log (tail) ---"; Get-Content $umLog -Tail 40 }
+          if (Test-Path $umLog) { Write-Host "--- update_manager.log (tail) ---"; Get-Content $umLog -Tail 10 }
+          try {
+            $threats = Get-MpThreatDetection -ErrorAction Stop
+            if ($threats) { Write-Host "--- Defender detections ---"; $threats | Format-List | Out-String | Write-Host }
+          } catch { Write-Host "Get-MpThreatDetection unavailable: $_" }
           if ($code -ne 0) { throw "update manager --once failed against admin install (exit $code)" }
 
       - name: Install and smoke-test the installer (per-user override)
@@ -199,11 +216,17 @@ jobs:
             if (!(Test-Path "$installDir\$name")) { throw "missing installed file: $installDir\$name" }
           }
           $env:TSBACKUP_INSTALL_DIR = $installDir
-          & "$installDir\TsBackup_update_manager.exe" --once
-          $code = $LASTEXITCODE
+          $proc = Start-Process -FilePath "$installDir\TsBackup_update_manager.exe" -ArgumentList "--once" -PassThru
+          Wait-Process -Id $proc.Id -Timeout 60 -ErrorAction SilentlyContinue
+          $code = $proc.ExitCode
           Write-Host "update manager --once exit code: $code"
+          Write-Host "exe still present after run: $(Test-Path "$installDir\TsBackup_update_manager.exe")"
           $umLog = "$env:LOCALAPPDATA\TsBackup\update_manager.log"
-          if (Test-Path $umLog) { Write-Host "--- update_manager.log (tail) ---"; Get-Content $umLog -Tail 40 }
+          if (Test-Path $umLog) { Write-Host "--- update_manager.log (tail) ---"; Get-Content $umLog -Tail 10 }
+          try {
+            $threats = Get-MpThreatDetection -ErrorAction Stop
+            if ($threats) { Write-Host "--- Defender detections ---"; $threats | Format-List | Out-String | Write-Host }
+          } catch { Write-Host "Get-MpThreatDetection unavailable: $_" }
           if ($code -ne 0) { throw "update manager --once failed against per-user install (exit $code)" }
 
       # Always keep the installer as a build artifact, even for
