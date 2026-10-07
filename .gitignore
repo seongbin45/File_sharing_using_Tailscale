@@ -23,3 +23,10 @@ webadmin/hosts.json
 # Who may do what, and what they did. Both are site-specific.
 webadmin/access.json
 webadmin/audit.log
+
+# Local configuration for the web console. This file is created by the
+# web console on first run, and contains the local admin password.
+webadmin/config.json
+
+# local other repository configuration
+other/
