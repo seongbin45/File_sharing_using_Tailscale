@@ -56,7 +56,13 @@ CODE_CHARS = (IP_BITS + SECRET_BITS) // 5   # 45 bits / 5 = 9, exact fit
 assert (IP_BITS + SECRET_BITS) % 5 == 0
 
 PAIRING_PORT = 8781
-CODE_TTL_SECONDS = 15 * 60
+# Two windows, deliberately separate. The code is a short secret a person
+# reads and types, so it lives only from display until /pair accepts it.
+# The test transfer that follows (pick a folder, compress, send, unpack) is
+# authorised by the 128-bit confirm_token issued at /pair and gets its own
+# window from that moment - shortening the code's life must not shorten it.
+CODE_TTL_SECONDS = 10 * 60
+CONFIRM_TTL_SECONDS = 15 * 60
 MAX_WRONG_ATTEMPTS = 5
 MIN_REQUEST_INTERVAL = 0.2  # seconds - blocks flooding independent of lockout
 
@@ -288,6 +294,7 @@ class _Session:
     def __init__(self, secret: int) -> None:
         self.secret = secret
         self.created_at = time.time()
+        self.paired_at: float | None = None
         self.wrong_attempts = 0
         self.paired = False
         self.confirmed = False
@@ -305,6 +312,10 @@ class _Session:
         self.pending_interval_minutes = None
 
     def expired(self) -> bool:
+        """The window that applies now: the code's own until it is
+        accepted, the confirm window after."""
+        if self.paired_at is not None:
+            return time.time() - self.paired_at > CONFIRM_TTL_SECONDS
         return time.time() - self.created_at > CODE_TTL_SECONDS
 
     def locked_out(self) -> bool:
@@ -480,6 +491,7 @@ class PairingListener:
             raise PairingError("이미 사용된 코드입니다")
 
         session.paired = True
+        session.paired_at = time.time()
         session.paired_device_id = device_id
         session.confirm_token = secrets.token_hex(16)
         # Stashed for _handle_confirm(): known_senders.json is only written

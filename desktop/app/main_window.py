@@ -94,7 +94,7 @@ class PairingCodeDialog(QDialog):
         code_row.addWidget(copy_btn)
         code_row.addStretch(1)
         lay.addLayout(code_row)
-        lay.addWidget(QLabel("tailnet 안에서만 유효 · 15분 후 만료 · 한 번 쓰면 소멸"))
+        lay.addWidget(QLabel("tailnet 안에서만 유효 · 10분 후 만료 · 한 번 쓰면 소멸"))
         self.pair_status = QLabel("대기 중...")
         lay.addWidget(self.pair_status)
 

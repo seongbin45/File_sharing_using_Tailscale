@@ -442,8 +442,12 @@ def test_pairing():
         stale = listener._handle_pair({"secret": listener._session.secret,
                                         "device_name": "z2", "device_id": "dev-z2"})
         listener._session.created_at = time.time() - pairing.CODE_TTL_SECONDS - 1
+        check("once accepted, the code's own TTL passing does not expire the "
+              "session - the test transfer has its own confirm window",
+              not listener.is_expired())
+        listener._session.paired_at = time.time() - pairing.CONFIRM_TTL_SECONDS - 1
         check("is_expired() is true once a paired-but-unconfirmed session "
-              "passes its TTL - the receiver page uses this to offer the "
+              "passes its confirm window - the receiver page uses this to offer the "
               "새 코드 / 시험 없이 마침 escape hatches instead of waiting "
               "forever on a sender that may never come back",
               listener.is_expired())
