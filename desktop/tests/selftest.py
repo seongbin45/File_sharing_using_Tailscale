@@ -849,6 +849,45 @@ def test_receiver_unpack():
               unrelated.exists())
 
 
+def test_http_upload_dropped_midway():
+    section("http receiver - an upload cut off mid-body is not an arrival")
+    import socket
+
+    with tempfile.TemporaryDirectory() as tmp:
+        incoming = Path(tmp) / "incoming"
+        rcfg = AppConfig()
+        rcfg.role = "receiver"
+        rcfg.receiver.incoming_dir = str(incoming)
+        rcfg.receiver.http_port = 0
+        rcfg.receiver.http_token = "tok"
+        receiver = Receiver(rcfg, lambda _l: None)
+        receiver.start_http()
+        port = receiver._http.server_address[1]
+        try:
+            def upload(name: str, declared: int, body: bytes) -> None:
+                with socket.create_connection(("127.0.0.1", port), timeout=5) as s:
+                    s.sendall(
+                        f"POST /upload HTTP/1.1\r\nHost: x\r\nX-TsBackup-Token: tok\r\n"
+                        f"X-TsBackup-Name: {name}\r\nContent-Length: {declared}\r\n\r\n"
+                        .encode() + body
+                    )
+                    s.shutdown(socket.SHUT_WR)
+                    s.recv(1024)
+
+            upload("PycharmProjects_2099_01_01_00_00.7z", 1000, b"x" * 100)
+            check("a truncated upload leaves no .7z for the scan loop to unpack",
+                  not any(incoming.glob("*.7z")), str(list(incoming.iterdir())))
+            check("...and no .part is left behind either",
+                  not any(incoming.glob("*.part")))
+
+            upload("PycharmProjects_2099_01_01_00_01.7z", 100, b"x" * 100)
+            arrived = incoming / "PycharmProjects_2099_01_01_00_01.7z"
+            check("a complete upload still lands under its final name",
+                  arrived.exists() and arrived.stat().st_size == 100)
+        finally:
+            receiver.stop_http()
+
+
 def test_transport_registry():
     section("transport registry")
     from tsbackup import transports
@@ -876,6 +915,7 @@ if __name__ == "__main__":
     test_progress_and_cancel()
     test_sender_pass_with_fallback()
     test_receiver_unpack()
+    test_http_upload_dropped_midway()
     test_transport_registry()
 
     print()

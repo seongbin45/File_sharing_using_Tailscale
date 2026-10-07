@@ -220,6 +220,9 @@ class Receiver:
                     self.send_error(400, "not a .7z")
                     return
                 length = int(self.headers.get("Content-Length", 0))
+                if length <= 0:
+                    self.send_error(411, "length required")
+                    return
                 tmp = incoming / (name + ".part")
                 written = 0
                 try:
@@ -232,6 +235,13 @@ class Receiver:
                             fh.write(block)
                             written += len(block)
                             remaining -= len(block)
+                    # A sender that drops mid-upload ends the read loop early.
+                    # Renaming that into place would hand the scan loop a
+                    # truncated .7z as if it were a finished arrival.
+                    if written != length:
+                        tmp.unlink(missing_ok=True)
+                        log(f"업로드 중단: {name} ({written}/{length} bytes) - 폐기")
+                        return
                     tmp.rename(incoming / name)
                 except OSError as exc:
                     tmp.unlink(missing_ok=True)
