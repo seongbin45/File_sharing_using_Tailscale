@@ -1,0 +1,79 @@
+name: tests
+
+# Run every test suite on each push to main and each pull request, so a
+# regression shows up on the commit that caused it. Until this existed the
+# tests ran only inside desktop-release.yml, i.e. only when a version tag was
+# pushed - a broken main went unnoticed until release day.
+#
+# Modelled on rustdesk's ci.yml: run on push and PR, skip docs-only changes.
+# No build or packaging here; that stays in desktop-release.yml.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+  pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop:
+    # Windows, same as the release build: gui_smoke.py's shutdown path and the
+    # update manager's process handling are Windows-specific.
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: desktop
+    env:
+      # See desktop-release.yml: the runner's stdout is a pipe, which Python
+      # would otherwise encode with the legacy codepage.
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Self-test the pure core
+        run: python -m tests.selftest
+      - name: Update manager unit tests
+        run: python -m tests.test_update_manager
+      - name: GUI smoke test
+        run: python -m tests.gui_smoke
+
+  webadmin:
+    # Linux: the console is deployed as a container (Dockerfile, render.yaml).
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: webadmin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r tests/requirements-dev.txt
+      - name: Self-test
+        run: python -m tests.selftest
+      - name: Access tests
+        run: python -m tests.accesstest
+      - name: Auth tests
+        run: python -m tests.authtest
