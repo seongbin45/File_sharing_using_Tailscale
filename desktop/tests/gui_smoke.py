@@ -350,6 +350,42 @@ def test_pairing_code_dialog(app: QApplication, root: Path) -> None:
             dlg._listener.stop()
 
 
+def test_single_instance(app: QApplication, root: Path) -> None:
+    section("single instance (app/single_instance.py)")
+    from app.single_instance import InstanceGuard
+
+    lock = root / "si" / "tsbackup.lock"
+    shown: list[int] = []
+    first = InstanceGuard(lock)
+    check("the first launch becomes the instance", first.claim(lambda: shown.append(1)))
+
+    # A real second process, as a second double-click would be: the guard's
+    # client side blocks on the pipe, so in-process it would wait on the very
+    # event loop that has to answer it.
+    import subprocess
+
+    child = subprocess.Popen(
+        [sys.executable, "-c",
+         "import sys; from PySide6.QtCore import QCoreApplication; "
+         "from app.single_instance import InstanceGuard; from pathlib import Path; "
+         "a = QCoreApplication([]); "
+         "sys.exit(0 if InstanceGuard(Path(sys.argv[1])).claim(lambda: None) else 3)",
+         str(lock)],
+        cwd=str(Path(__file__).resolve().parent.parent),
+    )
+    deadline = time.time() + 10
+    while (not shown or child.poll() is None) and time.time() < deadline:
+        app.processEvents()
+        time.sleep(0.02)
+    check("a second launch is refused", child.wait(timeout=5) == 3, child.returncode)
+    check("...and asks the running one to show its window", shown == [1], shown)
+
+    first.release()
+    third = InstanceGuard(lock)
+    check("once the instance exits, a new launch is allowed", third.claim(lambda: None))
+    third.release()
+
+
 def main() -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     # ignore_cleanup_errors (3.10+): every individual check already passed
@@ -373,6 +409,7 @@ def main() -> int:
         test_wizard_receiver_expiry_escape_hatch(app, root)
         test_wizard_close_routes_through_reject(app, root)
         test_pairing_code_dialog(app, root)
+        test_single_instance(app, root)
 
         print()
         if FAILURES:

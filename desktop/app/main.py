@@ -89,6 +89,7 @@ def _check_gui_imports() -> int:
     from PySide6.QtWidgets import QApplication, QSystemTrayIcon  # noqa: F401
 
     from app.main_window import MainWindow  # noqa: F401
+    from app.single_instance import InstanceGuard  # noqa: F401
     from app.tray import Tray  # noqa: F401
     from app.wizard import SetupWizard  # noqa: F401
 
@@ -111,6 +112,20 @@ def _gui() -> int:
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)   # closing the window hides to tray
+
+    from app.single_instance import InstanceGuard
+    shown: dict = {"window": None}
+
+    def show_existing() -> None:
+        w = shown["window"]
+        if w is not None:
+            w.showNormal()
+            w.raise_()
+            w.activateWindow()
+
+    guard = InstanceGuard(config_dir() / "tsbackup.lock")
+    if not guard.claim(show_existing):
+        return 0
 
     cfg = AppConfig.load()
     log = Log(config_dir() / "tsbackup.log")
@@ -140,6 +155,7 @@ def _gui() -> int:
         app.quit()
 
     window = MainWindow(cfg, log, engine, do_quit)
+    shown["window"] = window
 
     tray = None
     if QSystemTrayIcon.isSystemTrayAvailable():
