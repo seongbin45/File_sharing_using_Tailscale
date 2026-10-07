@@ -49,12 +49,20 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+      # Each FAIL / traceback line is re-emitted as an ::error:: annotation,
+      # so the reason shows on the commit page without opening the job log.
       - name: Self-test the pure core
-        run: python -m tests.selftest
+        run: |
+          python -m tests.selftest 2>&1 | Tee-Object -Variable out
+          if ($LASTEXITCODE) { $out | Select-String 'FAIL|Error|Traceback' | % { "::error::$_" }; exit 1 }
       - name: Update manager unit tests
-        run: python -m tests.test_update_manager
+        run: |
+          python -m tests.test_update_manager 2>&1 | Tee-Object -Variable out
+          if ($LASTEXITCODE) { $out | Select-String 'FAIL|Error|Traceback' | % { "::error::$_" }; exit 1 }
       - name: GUI smoke test
-        run: python -m tests.gui_smoke
+        run: |
+          python -m tests.gui_smoke 2>&1 | Tee-Object -Variable out
+          if ($LASTEXITCODE) { $out | Select-String 'FAIL|Error|Traceback' | % { "::error::$_" }; exit 1 }
 
   webadmin:
     # Linux: the console is deployed as a container (Dockerfile, render.yaml).
