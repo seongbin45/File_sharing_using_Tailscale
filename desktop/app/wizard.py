@@ -317,9 +317,6 @@ class SetupWizard(QDialog):
         fp = payload.get("host_key_fingerprint")
         if fp:
             s.host_key = fp
-        token = payload.get("issued_token")
-        if token:
-            s.http_token = token
         self.sender_next.setEnabled(True)
 
     def _start_test_transfer(self) -> None:

@@ -372,6 +372,20 @@ def test_pairing():
             check("a device_id with control characters is refused",
                   "device_id" in str(exc), str(exc))
 
+        section("pairing: http is refused, without consuming the code")
+        listener.regenerate()
+        req = {"secret": listener._session.secret, "device_name": "x", "device_id": "y"}
+        try:
+            listener._handle_pair({**req, "transport_preference": "http"})
+            check("an http pairing request is refused as unsupported", False, "it paired")
+        except pairing.PairingError as exc:
+            check("an http pairing request is refused as unsupported",
+                  "지원하지 않" in str(exc), str(exc))
+        time.sleep(pairing.MIN_REQUEST_INTERVAL + 0.05)
+        resp = listener._handle_pair({**req, "transport_preference": "taildrop"})
+        check("...the same code still pairs over taildrop, and no upload token is issued",
+              bool(resp.get("confirm_token")) and "issued_token" not in resp, str(resp))
+
         listener.regenerate()
         listener._session.created_at = time.time() - pairing.CODE_TTL_SECONDS - 1
         try:

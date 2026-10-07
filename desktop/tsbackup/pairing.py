@@ -14,10 +14,10 @@ details:
 
     receiver: generate_code() -> PairingListener.start() shows a code
     sender:   resolve_and_pair(code, ...) -> POST /pair
-    receiver: records the sender into known_senders.json, issues a fresh
-              confirm_token (and, for HTTP push, a fresh long-term upload
-              token - never the pairing secret itself) and its own
-              connection details in the response
+    receiver: issues a fresh confirm_token and returns its own connection
+              details (taildrop only - http pairing is refused until
+              per-device upload tokens exist; no long-term token is ever
+              handed out here)
     sender:   sends a small synthetic test archive, then
               confirm_test_transfer(...) -> POST /confirm, closing the loop
               the wizard's test-transfer step needs to prove receive+unpack
@@ -292,7 +292,6 @@ class _Session:
         self.paired = False
         self.confirmed = False
         self.confirm_token: str | None = None
-        self.issued_token: str | None = None
         self.last_request_at = 0.0
         # Set on the first successful /pair, so a repeat request from the
         # same device (the sender retrying after a failed test-transfer)
@@ -464,6 +463,12 @@ class PairingListener:
             raise PairingError("보내는 쪽 정보가 없습니다 (device_name/device_id)")
         if not _valid_device_id(device_id):
             raise PairingError("보내는 쪽 device_id 형식이 올바르지 않습니다")
+        # Unsupported until the receiver stores per-device token hashes with
+        # expiry and revocation (docs/VERIFICATION.md, pairing audit). Refused
+        # here, before the code is consumed, so the sender can retry with a
+        # supported transport on the same code.
+        if str(body.get("transport_preference", "taildrop")) == "http":
+            raise PairingError("http 짝 맺기는 현재 지원하지 않습니다 - taildrop 으로 짝을 맺으십시오")
 
         if session.paired:
             if session.paired_device_id == device_id:
@@ -494,9 +499,6 @@ class PairingListener:
         fp = local_ssh_host_key_fingerprint()
         if fp:
             response["host_key_fingerprint"] = fp
-        if str(body.get("transport_preference")) == "http":
-            session.issued_token = secrets.token_hex(16)
-            response["issued_token"] = session.issued_token
 
         session.paired_response = response
         self._log(f"짝 요청 수락: {device_name} ({device_id})")
