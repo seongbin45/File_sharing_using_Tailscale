@@ -19,6 +19,7 @@ opened mid-transfer.
 from __future__ import annotations
 
 import contextlib
+import hmac
 import json
 import os
 import subprocess
@@ -53,6 +54,13 @@ def _stamp_of(name: str) -> str:
 # being appended onto someone else's bytes.
 
 PART_KEEP_DAYS = 3
+
+
+def _token_ok(given: str | None, token: str) -> bool:
+    # Constant-time: the upload token is long-lived and has no attempt limit.
+    if not token or not given:
+        return False
+    return hmac.compare_digest(given.encode("utf-8"), token.encode("utf-8"))
 
 _busy: set[str] = set()
 _busy_lock = threading.Lock()
@@ -347,7 +355,7 @@ class Receiver:
                 if url.path != "/upload":
                     self.send_error(404)
                     return
-                if not token or self.headers.get("X-TsBackup-Token") != token:
+                if not _token_ok(self.headers.get("X-TsBackup-Token"), token):
                     self.send_error(403, "bad token")
                     return
                 name = Path(parse_qs(url.query).get("name", [""])[0]).name
@@ -371,7 +379,7 @@ class Receiver:
                 if self.path != "/upload":
                     self.send_error(404)
                     return
-                if not token or self.headers.get("X-TsBackup-Token") != token:
+                if not _token_ok(self.headers.get("X-TsBackup-Token"), token):
                     self.send_error(403, "bad token")
                     log("업로드 거부: 토큰 불일치")
                     return

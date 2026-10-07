@@ -31,6 +31,7 @@ is not enough on its own against an unthrottled listener).
 from __future__ import annotations
 
 import hashlib
+import hmac
 import http.server
 import json
 import secrets
@@ -477,7 +478,8 @@ class PairingListener:
             raise PairingError("짝 절차가 아직 끝나지 않았습니다")
         if session.expired():
             raise PairingError("코드가 만료되었습니다")
-        if body.get("confirm_token") != session.confirm_token:
+        if not hmac.compare_digest(str(body.get("confirm_token", "")).encode("utf-8"),
+                                   session.confirm_token.encode("utf-8")):
             raise PairingError("확인 토큰이 올바르지 않습니다")
         match = self._confirm_test_file(
             str(body.get("test_name", "")), str(body.get("expected_hash", ""))

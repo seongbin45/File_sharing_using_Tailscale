@@ -1038,6 +1038,12 @@ def test_http_resume():
             check("a complete-but-unrenamed .part is finished without resending",
                   ok and final.read_bytes() == data and any("이미 완전한" in ln for ln in lines),
                   str(lines))
+            final.unlink()
+
+            bad = SenderConfig(host="127.0.0.1", port=port, http_token="tok-wrong")
+            r = http_push.HttpTransport(bad, lambda _l: None).send(archive)
+            check("a wrong upload token is refused and writes nothing",
+                  not r.ok and "토큰" in r.detail and not any(incoming.iterdir()), r.detail)
         finally:
             receiver.stop_http()
 
