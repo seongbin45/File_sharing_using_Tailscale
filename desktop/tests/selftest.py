@@ -955,6 +955,93 @@ def test_http_upload_dropped_midway():
             receiver.stop_http()
 
 
+def test_http_resume():
+    section("http resume - a cut upload continues from the last byte, verified")
+    import hashlib
+    import json as _json
+    import socket
+
+    from tsbackup.transports import http_push
+
+    http_push.RETRY_SLEEP = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        incoming = root / "incoming"
+        rcfg = AppConfig()
+        rcfg.role = "receiver"
+        rcfg.receiver.incoming_dir = str(incoming)
+        rcfg.receiver.http_port = 0
+        rcfg.receiver.http_token = "tok"
+        receiver = Receiver(rcfg, lambda _l: None)
+        receiver.start_http()
+        port = receiver._http.server_address[1]
+
+        archive = root / "PycharmProjects_2099_02_02_02_02.7z"
+        data = os.urandom(300_000)
+        archive.write_bytes(data)
+        sha = hashlib.sha256(data).hexdigest()
+        scfg = SenderConfig(host="127.0.0.1", port=port, http_token="tok")
+        part = incoming / (archive.name + ".part")
+        final = incoming / archive.name
+
+        def cut_upload(nbytes: int) -> None:
+            with socket.create_connection(("127.0.0.1", port), timeout=5) as s:
+                s.sendall(
+                    f"POST /upload HTTP/1.1\r\nHost: x\r\nX-TsBackup-Token: tok\r\n"
+                    f"X-TsBackup-Name: {archive.name}\r\nX-TsBackup-Size: {len(data)}\r\n"
+                    f"X-TsBackup-SHA256: {sha}\r\nX-TsBackup-Offset: 0\r\n"
+                    f"Content-Length: {len(data)}\r\n\r\n".encode() + data[:nbytes])
+                s.shutdown(socket.SHUT_WR)
+                s.recv(1024)
+
+        def send() -> tuple[bool, list[str]]:
+            lines: list[str] = []
+            ok = http_push.HttpTransport(scfg, lines.append).send(archive).ok
+            return ok, lines
+
+        try:
+            cut_upload(100_000)
+            check("a cut upload is kept as .part for resume, never promoted",
+                  part.exists() and part.stat().st_size == 100_000 and not final.exists())
+            ok, lines = send()
+            check("the next send resumes from byte 100000",
+                  any("100000/300000" in ln for ln in lines), str(lines))
+            check("...and the result is byte-identical", ok and final.read_bytes() == data)
+            final.unlink()
+
+            # Same name, different archive (a fresh snapshot in the same
+            # minute): its .part must not be appended onto.
+            cut_upload(100_000)
+            json_path = Path(str(part) + ".json")
+            record = _json.loads(json_path.read_text())
+            record["sha256"] = "0" * 64
+            json_path.write_text(_json.dumps(record))
+            ok, lines = send()
+            check("a .part from a different archive with the same name restarts at 0",
+                  ok and final.read_bytes() == data and not any("이어받기" in ln for ln in lines),
+                  str(lines))
+            final.unlink()
+
+            cut_upload(100_000)
+            raw = bytearray(part.read_bytes())
+            raw[10] ^= 0xFF
+            part.write_bytes(bytes(raw))
+            ok, _lines = send()
+            check("corrupt bytes already held are caught by sha256 and re-sent whole",
+                  ok and final.read_bytes() == data)
+            final.unlink()
+
+            # Fully written, then the receiver died before verify + rename.
+            part.write_bytes(data)
+            Path(str(part) + ".json").write_text(_json.dumps({"size": len(data), "sha256": sha}))
+            ok, lines = send()
+            check("a complete-but-unrenamed .part is finished without resending",
+                  ok and final.read_bytes() == data and any("이미 완전한" in ln for ln in lines),
+                  str(lines))
+        finally:
+            receiver.stop_http()
+
+
 def test_transport_registry():
     section("transport registry")
     from tsbackup import transports
@@ -984,6 +1071,7 @@ if __name__ == "__main__":
     test_pending_resend()
     test_receiver_unpack()
     test_http_upload_dropped_midway()
+    test_http_resume()
     test_transport_registry()
 
     print()

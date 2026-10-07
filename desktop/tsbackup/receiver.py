@@ -18,7 +18,9 @@ opened mid-transfer.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import subprocess
 import threading
 import time
@@ -30,6 +32,7 @@ import py7zr
 from . import pairing
 from .archiver import STAMP_RE
 from .config import config_dir
+from .pending import sha256_file
 
 SETTLE_SECONDS = 3       # size must be unchanged this long before unpacking
 POLL_SECONDS = 5
@@ -38,6 +41,133 @@ POLL_SECONDS = 5
 def _stamp_of(name: str) -> str:
     m = STAMP_RE.search(name)
     return m.group(1) if m else time.strftime("%Y_%m_%d_%H_%M")
+
+
+# --------------------------------------------------- resumable http upload
+#
+# rustdesk's file transfer shape (libs/base/src/fs.rs): bytes land in
+# <name>.part next to a record of which source they belong to, and only a
+# complete, verified file takes the final name. Here the record is the
+# archive's size + sha256, so a different archive that happens to share the
+# name (a fresh snapshot in the same minute) restarts from byte 0 instead of
+# being appended onto someone else's bytes.
+
+PART_KEEP_DAYS = 3
+
+_busy: set[str] = set()
+_busy_lock = threading.Lock()
+
+
+@contextlib.contextmanager
+def _name_lock(name: str):
+    with _busy_lock:
+        free = name not in _busy
+        if free:
+            _busy.add(name)
+    try:
+        yield free
+    finally:
+        if free:
+            with _busy_lock:
+                _busy.discard(name)
+
+
+def _resume_ident(headers) -> tuple[int, str] | None:
+    size = headers.get("X-TsBackup-Size") or ""
+    sha = (headers.get("X-TsBackup-SHA256") or "").strip().lower()
+    if not size.isdigit() or not sha:
+        return None
+    return int(size), sha
+
+
+def _part_paths(incoming: Path, name: str) -> tuple[Path, Path]:
+    return incoming / (name + ".part"), incoming / (name + ".part.json")
+
+
+def _resume_offset(incoming: Path, name: str, size: int, sha: str) -> tuple[int, bool]:
+    """(bytes already held, whether the archive is already complete here)."""
+    final = incoming / name
+    part, meta = _part_paths(incoming, name)
+    if final.is_file() and final.stat().st_size == size and sha256_file(final) == sha:
+        return size, True
+    try:
+        record = json.loads(meta.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        record = None
+    if part.is_file() and record == {"size": size, "sha256": sha}:
+        have = part.stat().st_size
+        if have < size:
+            return have, False
+        # Fully written but never verified (we died before the rename).
+        if have == size and sha256_file(part) == sha:
+            os.replace(part, final)
+            meta.unlink(missing_ok=True)
+            return size, True
+    part.unlink(missing_ok=True)
+    meta.unlink(missing_ok=True)
+    return 0, False
+
+
+def _receive_resumable(handler, incoming: Path, name: str, length: int,
+                       ident: tuple[int, str], log: Callable[[str], None]) -> None:
+    size, sha = ident
+    offset = int(handler.headers.get("X-TsBackup-Offset") or 0)
+    have, complete = _resume_offset(incoming, name, size, sha)
+    if complete:
+        handler.send_response(200)
+        handler.end_headers()
+        return
+    if offset != have or length != size - offset:
+        handler.send_error(409, f"expected offset {have}")
+        return
+    part, meta = _part_paths(incoming, name)
+    written = 0
+    try:
+        if offset == 0:
+            tmp = meta.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"size": size, "sha256": sha}), encoding="utf-8")
+            os.replace(tmp, meta)
+        with part.open("ab" if offset else "wb") as fh:
+            remaining = length
+            while remaining > 0:
+                block = handler.rfile.read(min(1024 * 1024, remaining))
+                if not block:
+                    break
+                fh.write(block)
+                written += len(block)
+                remaining -= len(block)
+        if written != length:
+            log(f"업로드 중단: {name} ({offset + written}/{size} bytes) - 이어받기용으로 보관")
+            return
+        if sha256_file(part) != sha:
+            part.unlink(missing_ok=True)
+            meta.unlink(missing_ok=True)
+            log(f"업로드 폐기: {name} - sha256 불일치")
+            handler.send_error(422, "sha256 mismatch")
+            return
+        os.replace(part, incoming / name)
+        meta.unlink(missing_ok=True)
+    except OSError as exc:
+        handler.send_error(500, str(exc))
+        return
+    resumed = f", {offset} bytes 부터 이어받음" if offset else ""
+    log(f"업로드 수신: {name} ({size} bytes, sha256 확인{resumed})")
+    handler.send_response(200)
+    handler.end_headers()
+    handler.wfile.write(b"ok")
+
+
+def _expire_parts(incoming: Path, log: Callable[[str], None], now: float | None = None) -> None:
+    now = time.time() if now is None else now
+    for part in incoming.glob("*.7z.part"):
+        try:
+            if now - part.stat().st_mtime <= PART_KEEP_DAYS * 86400:
+                continue
+            part.unlink()
+            Path(str(part) + ".json").unlink(missing_ok=True)
+            log(f"오래된 미완성 업로드 삭제: {part.name}")
+        except OSError:
+            pass
 
 
 class Receiver:
@@ -57,6 +187,7 @@ class Receiver:
         incoming = Path(self.cfg.receiver.incoming_dir)
         if not incoming.is_dir():
             return 0
+        _expire_parts(incoming, self.log)
 
         done = 0
         for path in sorted(incoming.glob("*.7z")):
@@ -207,6 +338,35 @@ class Receiver:
             def log_message(self, *args):  # silence the default stderr spam
                 pass
 
+            def do_GET(self):
+                # Resume query: how many bytes of this exact archive (name +
+                # size + sha256) are already here.
+                from urllib.parse import parse_qs, urlparse
+
+                url = urlparse(self.path)
+                if url.path != "/upload":
+                    self.send_error(404)
+                    return
+                if not token or self.headers.get("X-TsBackup-Token") != token:
+                    self.send_error(403, "bad token")
+                    return
+                name = Path(parse_qs(url.query).get("name", [""])[0]).name
+                ident = _resume_ident(self.headers)
+                if not name.endswith(".7z") or ident is None:
+                    self.send_error(400, "name, size and sha256 required")
+                    return
+                with _name_lock(name) as free:
+                    if not free:
+                        self.send_error(409, "upload in progress")
+                        return
+                    offset, complete = _resume_offset(incoming, name, *ident)
+                body = json.dumps({"offset": offset, "complete": complete}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
             def do_POST(self):
                 if self.path != "/upload":
                     self.send_error(404)
@@ -222,6 +382,14 @@ class Receiver:
                 length = int(self.headers.get("Content-Length", 0))
                 if length <= 0:
                     self.send_error(411, "length required")
+                    return
+                ident = _resume_ident(self.headers)
+                if ident is not None:
+                    with _name_lock(name) as free:
+                        if not free:
+                            self.send_error(409, "upload in progress")
+                            return
+                        _receive_resumable(self, incoming, name, length, ident, log)
                     return
                 tmp = incoming / (name + ".part")
                 written = 0
