@@ -325,6 +325,8 @@ def test_pairing():
             check("a used code is refused on a second /pair", True)
 
         listener.regenerate()
+        pair_log: list[str] = []
+        listener._log = pair_log.append
         for _ in range(pairing.MAX_WRONG_ATTEMPTS):
             time.sleep(pairing.MIN_REQUEST_INTERVAL + 0.05)
             try:
@@ -333,6 +335,12 @@ def test_pairing():
                 pass
         check(f"{pairing.MAX_WRONG_ATTEMPTS} wrong attempts increments the counter",
               listener._session.wrong_attempts == pairing.MAX_WRONG_ATTEMPTS)
+        check("every wrong code is logged on the receiver, with the count",
+              sum("불일치" in ln for ln in pair_log) == pairing.MAX_WRONG_ATTEMPTS
+              and f"{pairing.MAX_WRONG_ATTEMPTS}/{pairing.MAX_WRONG_ATTEMPTS}" in pair_log[-2],
+              str(pair_log))
+        check("...and the lockout once, when it happens",
+              sum("폐기" in ln for ln in pair_log) == 1, str(pair_log))
         time.sleep(pairing.MIN_REQUEST_INTERVAL + 0.05)
         try:
             listener._handle_pair({"secret": listener._session.secret,

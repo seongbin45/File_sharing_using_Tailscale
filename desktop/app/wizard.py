@@ -59,9 +59,10 @@ class _TestTransferWorker(QObject):
 
 
 class SetupWizard(QDialog):
-    def __init__(self, cfg, parent=None) -> None:
+    def __init__(self, cfg, parent=None, log=None) -> None:
         super().__init__(parent)
         self.cfg = cfg
+        self._log = log
         self.setWindowTitle("TS Backup 설정")
         self.setMinimumSize(560, 440)
 
@@ -176,7 +177,7 @@ class SetupWizard(QDialog):
         Path(r.unpack_dir).mkdir(parents=True, exist_ok=True)
 
         known_path = config_dir() / pairing.KNOWN_SENDERS_FILENAME
-        self._listener = pairing.PairingListener(self.cfg, known_path)
+        self._listener = pairing.PairingListener(self.cfg, known_path, log=self._log)
         code = self._listener.start(ip)
         self.code_label.setText(code)
         self.pair_status.setText("대기 중...")

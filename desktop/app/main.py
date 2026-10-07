@@ -133,7 +133,7 @@ def _gui() -> int:
     if not cfg.onboarded:
         from app.wizard import SetupWizard
 
-        wizard = SetupWizard(cfg)
+        wizard = SetupWizard(cfg, log=log.line)
         if wizard.exec() != SetupWizard.Accepted:
             # The wizard is mandatory on a genuinely fresh install - closing
             # it without finishing leaves nothing configured to run.

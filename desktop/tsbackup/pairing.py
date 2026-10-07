@@ -424,6 +424,14 @@ class PairingListener:
 
         if body.get("secret") != session.secret:
             session.wrong_attempts += 1
+            # Someone on the tailnet typing a wrong code is the one sign of a
+            # guessing attempt the person at this screen would otherwise
+            # never see. device_name is the requester's unverified claim.
+            claimed = str(body.get("device_name", "")).strip() or "?"
+            self._log(f"짝 코드 불일치 {session.wrong_attempts}/{MAX_WRONG_ATTEMPTS} "
+                      f"(요청 기기: {claimed})")
+            if session.locked_out():
+                self._log("틀린 시도가 너무 많아 짝 코드를 폐기했습니다 - 새 코드가 필요합니다")
             raise PairingError("코드가 일치하지 않습니다")
 
         # Validate the request body BEFORE consuming the code below - a

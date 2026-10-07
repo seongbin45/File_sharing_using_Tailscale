@@ -74,9 +74,10 @@ class PairingCodeDialog(QDialog):
     """"짝 코드 만들기" - the receiver home's way to pair another sender
     later without re-running the whole first-run wizard."""
 
-    def __init__(self, cfg, parent=None) -> None:
+    def __init__(self, cfg, parent=None, log=None) -> None:
         super().__init__(parent)
         self.cfg = cfg
+        self._log = log
         self.setWindowTitle("짝 코드 만들기")
         self.setMinimumWidth(360)
         self._listener: pairing.PairingListener | None = None
@@ -118,7 +119,7 @@ class PairingCodeDialog(QDialog):
             self.pair_status.setText("Tailscale 이 연결되어 있는지 확인하십시오.")
             return
         known_path = config_dir() / pairing.KNOWN_SENDERS_FILENAME
-        self._listener = pairing.PairingListener(self.cfg, known_path)
+        self._listener = pairing.PairingListener(self.cfg, known_path, log=self._log)
         self.code_label.setText(self._listener.start(ip))
         self._poll.start(1000)
 
@@ -368,7 +369,7 @@ class MainWindow(QMainWindow):
         return {"card": card, "value": value, "detail": detail}
 
     def _open_pairing_dialog(self) -> None:
-        PairingCodeDialog(self.cfg, self).exec()
+        PairingCodeDialog(self.cfg, self, log=self.log.line).exec()
         self._refresh_receiver_stats()
 
     def _refresh_receiver_stats(self) -> None:
