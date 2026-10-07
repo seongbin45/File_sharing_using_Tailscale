@@ -349,6 +349,29 @@ def test_pairing():
         except pairing.PairingError as exc:
             check("the code is locked out even with the correct secret", "폐기" in str(exc), str(exc))
 
+        section("pairing: a peer's device name cannot forge a log line")
+        from tsbackup.log import Log
+
+        flog = Log(Path(tmp) / "forge" / "tsbackup.log")
+        listener.regenerate()
+        listener._log = flog.line
+        forged = "laptop\n[2026-10-08 04:00:00] 짝 등록: trusted-pc (abc)‮"
+        try:
+            listener._handle_pair({"secret": -1, "device_name": forged, "device_id": "y"})
+        except pairing.PairingError:
+            pass
+        written = flog.path.read_text(encoding="utf-8").splitlines()
+        check("one log line per event, whatever the claimed name contains",
+              len(written) == 1 and "‮" not in written[0], str(written))
+        time.sleep(pairing.MIN_REQUEST_INTERVAL + 0.05)
+        try:
+            listener._handle_pair({"secret": listener._session.secret,
+                                   "device_name": "x", "device_id": "id\nforged"})
+            check("a device_id with control characters is refused", False, "it paired")
+        except pairing.PairingError as exc:
+            check("a device_id with control characters is refused",
+                  "device_id" in str(exc), str(exc))
+
         listener.regenerate()
         listener._session.created_at = time.time() - pairing.CODE_TTL_SECONDS - 1
         try:

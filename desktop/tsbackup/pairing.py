@@ -63,6 +63,26 @@ MIN_REQUEST_INTERVAL = 0.2  # seconds - blocks flooding independent of lockout
 KNOWN_SENDERS_FILENAME = "known_senders.json"
 
 
+PEER_FIELD_MAX = 64
+
+
+def _peer_text(value) -> str:
+    """A device name as the peer claims it - unverified, so it must not be
+    able to break or forge a log line (newline), or reorder what the UI
+    shows (bidi overrides). Drops control and format characters, caps the
+    length."""
+    import unicodedata
+
+    text = "".join(ch for ch in str(value) if unicodedata.category(ch)[0] != "C")
+    return text.strip()[:PEER_FIELD_MAX]
+
+
+def _valid_device_id(value: str) -> bool:
+    # Rejected, not cleaned: the same id comes back inside every archive the
+    # sender sends (.ts_sender.json), and must match the stored key exactly.
+    return 0 < len(value) <= PEER_FIELD_MAX and _peer_text(value) == value
+
+
 class PairingError(RuntimeError):
     """Raised for anything the wizard needs to show as a distinct error:
     expired/used/locked-out codes are a different message from an
@@ -427,7 +447,7 @@ class PairingListener:
             # Someone on the tailnet typing a wrong code is the one sign of a
             # guessing attempt the person at this screen would otherwise
             # never see. device_name is the requester's unverified claim.
-            claimed = str(body.get("device_name", "")).strip() or "?"
+            claimed = _peer_text(body.get("device_name", "")) or "?"
             self._log(f"짝 코드 불일치 {session.wrong_attempts}/{MAX_WRONG_ATTEMPTS} "
                       f"(요청 기기: {claimed})")
             if session.locked_out():
@@ -438,10 +458,12 @@ class PairingListener:
         # malformed request (missing device_name/device_id) must not burn
         # a one-time-use code that the sender never actually finished
         # using.
-        device_name = str(body.get("device_name", "")).strip()
+        device_name = _peer_text(body.get("device_name", ""))
         device_id = str(body.get("device_id", "")).strip()
         if not device_name or not device_id:
             raise PairingError("보내는 쪽 정보가 없습니다 (device_name/device_id)")
+        if not _valid_device_id(device_id):
+            raise PairingError("보내는 쪽 device_id 형식이 올바르지 않습니다")
 
         if session.paired:
             if session.paired_device_id == device_id:
