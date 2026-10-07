@@ -70,13 +70,8 @@ class SftpTransport(Transport):
             final = f"{remote_dir}/{archive_path.name}".replace("\\", "/")
             tmp = final + ".part"
 
-            size = archive_path.stat().st_size
-
-            def cb(sent: int, _total: int) -> None:
-                if progress and size:
-                    progress(min(100, int(sent * 100 / size)))
-
-            sftp.put(str(archive_path), tmp, callback=cb)
+            if not _upload_resumable(sftp, archive_path, tmp, progress, self.log):
+                return TransferResult(False, "업로드 후 원격 크기 불일치", time.time() - started)
             # Atomic swap into the watched name.
             try:
                 sftp.remove(final)
@@ -94,6 +89,65 @@ class SftpTransport(Transport):
     def _password(self) -> str:
         import os
         return os.environ.get("TSBACKUP_SFTP_PASSWORD", "")
+
+
+def _upload_resumable(sftp, local: Path, tmp: str,
+                      progress: Callable[[int], None] | None,
+                      log: Callable[[str], None]) -> bool:
+    """Upload `local` to `tmp`, continuing a previous cut upload when the
+    remote <tmp>.json record says it holds a prefix of this exact archive
+    (size + sha256). No server-side code runs here to hash the result, so
+    completion is checked by size; content corruption is caught when the
+    receiver unpacks (7z CRCs). Returns False if the final size is wrong."""
+    import json
+
+    from ..pending import sha256_file
+
+    size = local.stat().st_size
+    record_path = tmp + ".json"
+    record = {"size": size, "sha256": sha256_file(local)}
+
+    offset = 0
+    try:
+        with sftp.open(record_path, "rb") as fh:
+            held = json.loads(fh.read().decode("utf-8"))
+        have = sftp.stat(tmp).st_size
+        if held == record and 0 < have < size:
+            offset = have
+    except (OSError, ValueError):
+        pass
+
+    if offset:
+        log(f"이어받기(sftp): {local.name} {offset}/{size} bytes 부터")
+        remote = sftp.open(tmp, "r+b")
+    else:
+        with sftp.open(record_path, "wb") as fh:
+            fh.write(json.dumps(record).encode("utf-8"))
+        remote = sftp.open(tmp, "wb")
+    with remote, local.open("rb") as src:
+        if hasattr(remote, "set_pipelined"):
+            remote.set_pipelined(True)
+        remote.seek(offset)
+        src.seek(offset)
+        sent = offset
+        while True:
+            block = src.read(1024 * 1024)
+            if not block:
+                break
+            remote.write(block)
+            sent += len(block)
+            if progress and size:
+                progress(min(100, int(sent * 100 / size)))
+
+    if sftp.stat(tmp).st_size != size:
+        sftp.remove(tmp)
+        sftp.remove(record_path)
+        return False
+    try:
+        sftp.remove(record_path)
+    except OSError:
+        pass
+    return True
 
 
 def _pinned_policy(paramiko, cfg, log):

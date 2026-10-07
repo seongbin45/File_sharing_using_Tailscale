@@ -1042,6 +1042,48 @@ def test_http_resume():
             receiver.stop_http()
 
 
+def test_sftp_resume():
+    section("sftp resume - continue a cut upload only if it is the same archive")
+    import hashlib
+    import json as _json
+
+    from tsbackup.transports.sftp import _upload_resumable
+
+    class LocalSftp:
+        """The few SFTPClient calls _upload_resumable makes, on local files."""
+        def open(self, path, mode):
+            return open(path, mode)
+
+        def stat(self, path):
+            return os.stat(path)
+
+        def remove(self, path):
+            os.remove(path)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        local = root / "PycharmProjects_2099_04_04_04_04.7z"
+        data = os.urandom(200_000)
+        local.write_bytes(data)
+        remote = str(root / "remote.7z.part")
+        record = {"size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+
+        Path(remote).write_bytes(data[:80_000])
+        Path(remote + ".json").write_text(_json.dumps(record))
+        lines: list[str] = []
+        ok = _upload_resumable(LocalSftp(), local, remote, None, lines.append)
+        check("a matching remote .part is continued from its last byte",
+              ok and any("80000/200000" in ln for ln in lines), str(lines))
+        check("...giving the identical file", Path(remote).read_bytes() == data)
+
+        Path(remote).write_bytes(b"x" * 80_000)
+        Path(remote + ".json").write_text(_json.dumps({**record, "sha256": "0" * 64}))
+        lines = []
+        ok = _upload_resumable(LocalSftp(), local, remote, None, lines.append)
+        check("a remote .part recorded for a different archive is rewritten from 0",
+              ok and not lines and Path(remote).read_bytes() == data, str(lines))
+
+
 def test_transport_registry():
     section("transport registry")
     from tsbackup import transports
@@ -1072,6 +1114,7 @@ if __name__ == "__main__":
     test_receiver_unpack()
     test_http_upload_dropped_midway()
     test_http_resume()
+    test_sftp_resume()
     test_transport_registry()
 
     print()
