@@ -749,7 +749,74 @@ def test_sender_pass_with_fallback():
         cfg.sender.fallback_transports = ["fake"]
         r2 = engine_core.run_sender_once(cfg, lambda _l: None)
         check("run reports failure", not r2.ok)
-        check("archive still on disk for retry", len(list(work.glob("*.7z"))) >= 1)
+        check("archive kept in pending/ for retry",
+              len(list((work / "pending").glob("*.7z"))) == 1)
+
+
+def test_pending_resend():
+    section("pending: an unsent archive is resent before compressing anew")
+    from tsbackup import filelock, pending
+
+    base._REGISTRY["fake"] = _FakeTransport
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        src = make_tree(root)
+        work = root / "work"
+        cfg = AppConfig()
+        cfg.sender = SenderConfig(source_dir=str(src), work_dir=str(work), level=1,
+                                  keep_local=1, transport="fake")
+
+        _FakeTransport.calls = []
+        _FakeTransport.should_fail = True
+        engine_core.run_sender_once(cfg, lambda _l: None)
+        parked = list((work / "pending").glob("*.7z"))
+        check("a failed archive is parked in pending/ with its record",
+              len(parked) == 1 and parked[0].with_suffix(".json").exists(), str(parked))
+
+        _FakeTransport.should_fail = False
+        lines: list[str] = []
+        result = engine_core.run_sender_once(cfg, lines.append)
+        check("the next run resends that same archive", result.ok and
+              _FakeTransport.calls == [parked[0].name] * 2, str(_FakeTransport.calls))
+        check("...without compressing a new snapshot",
+              not any(ln.startswith("압축 완료") for ln in lines), str(lines))
+        check("...and logs it as a pending resend with its snapshot time",
+              any("pending 재전송" in ln and "스냅샷" in ln for ln in lines), str(lines))
+        check("pending/ is empty once the send is confirmed",
+              not any((work / "pending").iterdir()))
+
+        section("pending: a damaged archive is discarded, never resent")
+        _FakeTransport.should_fail = True
+        engine_core.run_sender_once(cfg, lambda _l: None)
+        bad = next((work / "pending").glob("*.7z"))
+        data = bytearray(bad.read_bytes())
+        data[len(data) // 2] ^= 0xFF
+        bad.write_bytes(bytes(data))
+        _FakeTransport.should_fail = False
+        lines = []
+        engine_core.run_sender_once(cfg, lines.append)
+        check("hash mismatch is detected and the archive deleted",
+              any("해시 불일치" in ln for ln in lines), str(lines))
+        check("a fresh snapshot is compressed and sent instead",
+              any(ln.startswith("압축 완료") for ln in lines) and
+              not any((work / "pending").iterdir()), str(lines))
+
+        section("pending: retention")
+        _FakeTransport.should_fail = True
+        engine_core.run_sender_once(cfg, lambda _l: None)
+        later = time.time() + (pending.KEEP_DAYS + 1) * 86400
+        expired = pending.take(str(work), str(src), lambda _l: None, now=later)
+        check(f"a pending archive older than {pending.KEEP_DAYS} days is deleted",
+              expired is None and not any((work / "pending").iterdir()))
+
+        section("pending: one sender at a time")
+        held = filelock.try_lock(work / ".sender.lock")
+        try:
+            r = engine_core.run_sender_once(cfg, lambda _l: None)
+            check("a run that finds the work_dir locked does nothing",
+                  not r.ok and "진행 중" in r.detail, r.detail)
+        finally:
+            held.close()
 
 
 def test_receiver_unpack():
@@ -914,6 +981,7 @@ if __name__ == "__main__":
     test_archiver_and_prune()
     test_progress_and_cancel()
     test_sender_pass_with_fallback()
+    test_pending_resend()
     test_receiver_unpack()
     test_http_upload_dropped_midway()
     test_transport_registry()
