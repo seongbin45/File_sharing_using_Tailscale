@@ -63,7 +63,13 @@ def _headless_run() -> int:
         for p in problems:
             _say(log, f"설정 필요: {p}")
         return 2
+    import time
+
+    from tsbackup import history
+
+    started = time.time()
     result = engine_core.run_sender_once(cfg, log.line)
+    history.record(config_dir() / history.FILENAME, result, time.time() - started)
     return 0 if result.ok else 1
 
 

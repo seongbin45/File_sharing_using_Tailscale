@@ -18,10 +18,11 @@ from __future__ import annotations
 
 import shutil
 import socket
+import threading
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QObject, QTimer, Qt, Signal
 from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
     QApplication, QDialog, QFrame, QHBoxLayout, QLabel, QMainWindow,
@@ -29,7 +30,7 @@ from PySide6.QtWidgets import (
     QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
-from tsbackup import pairing
+from tsbackup import history, pairing
 from tsbackup.config import ROLE_RECEIVER, ROLE_SENDER, config_dir
 
 from .icons import app_icon
@@ -71,6 +72,45 @@ def _every(minutes) -> str:
     if m and m % 60 == 0:
         return f"{m // 60}시간마다"
     return f"{m}분마다"
+
+
+def _when(ts: float) -> str:
+    """"오늘 04:26" / "어제 04:26" / "10월 06일 04:26"."""
+    day = time.strftime("%Y-%m-%d", time.localtime(ts))
+    if day == time.strftime("%Y-%m-%d"):
+        prefix = "오늘"
+    elif day == time.strftime("%Y-%m-%d", time.localtime(time.time() - 86400)):
+        prefix = "어제"
+    else:
+        prefix = time.strftime("%m월 %d일", time.localtime(ts))
+    return f"{prefix} {time.strftime('%H:%M', time.localtime(ts))}"
+
+
+def _duration(seconds: float) -> str:
+    s = int(round(seconds))
+    if s < 60:
+        return f"{s}초"
+    if s < 3600:
+        return f"{s // 60}분 {s % 60}초"
+    return f"{s // 3600}시간 {s % 3600 // 60}분"
+
+
+class _FolderSummary(QObject):
+    """"23개 폴더 · 8.4 GB", computed off the GUI thread - walking a tree of
+    tens of thousands of files takes seconds."""
+
+    done = Signal(str)
+
+    def start(self, folder: str, suffix: str) -> None:
+        threading.Thread(target=self._run, args=(folder, suffix), daemon=True).start()
+
+    def _run(self, folder: str, suffix: str) -> None:
+        path = Path(folder)
+        if not folder or not path.is_dir():
+            self.done.emit(f"폴더가 없습니다 · {suffix}")
+            return
+        subdirs = sum(1 for p in path.iterdir() if p.is_dir())
+        self.done.emit(f"{subdirs}개 폴더 · {_human_size(_dir_size(path))} · {suffix}")
 
 
 def _sender_of(folder: Path, registry: dict) -> str:
@@ -235,6 +275,11 @@ class MainWindow(QMainWindow):
         # status card - the one thing worth knowing at a glance
         card = _Card()
         card_lay = QVBoxLayout(card)
+        # Sender only: the answer to "is it okay?" from the last recorded
+        # run. self.status stays the engine's own state (대기 / 압축·전송 중).
+        self.verdict = QLabel("")
+        self.verdict.setStyleSheet("font-size: 17px; font-weight: 700;")
+        card_lay.addWidget(self.verdict)
         self.status = QLabel("대기")
         self.status.setStyleSheet("font-size: 15px; font-weight: 600;")
         card_lay.addWidget(self.status)
@@ -335,25 +380,86 @@ class MainWindow(QMainWindow):
         self.sender_folder_label = QLabel("")
         self.sender_folder_label.setWordWrap(True)
         fc.addWidget(self.sender_folder_label)
+        self.sender_folder_summary = QLabel("")
+        self.sender_folder_summary.setStyleSheet("color: #767676;")
+        fc.addWidget(self.sender_folder_summary)
         row.addWidget(folder_card, 1)
 
         targets_card = _Card()
         tc = QVBoxLayout(targets_card)
-        tc.addWidget(QLabel("받는 쪽"))
+        self.sender_targets_title = QLabel("받는 쪽")
+        tc.addWidget(self.sender_targets_title)
         self.sender_targets_label = QLabel("")
         self.sender_targets_label.setWordWrap(True)
         tc.addWidget(self.sender_targets_label)
         row.addWidget(targets_card, 1)
-
         self.body_container.addLayout(row)
+
+        self.sender_space_label = QLabel("")
+        self.sender_space_label.setStyleSheet("color: #767676;")
+        self.body_container.addWidget(self.sender_space_label)
+
+        history_card = _Card()
+        hc = QVBoxLayout(history_card)
+        hc.addWidget(QLabel("지난 전송"))
+        self.history_list = QTreeWidget()
+        self.history_list.setHeaderLabels(["시각", "보낸 것", "결과"])
+        self.history_list.setRootIsDecorated(False)
+        self.history_list.setAlternatingRowColors(True)
+        hc.addWidget(self.history_list, 1)
+        self.body_container.addWidget(history_card, 1)
+
+        self._folder_summary = _FolderSummary()
+        self._folder_summary.done.connect(self.sender_folder_summary.setText)
         self._refresh_sender_info()
 
     def _refresh_sender_info(self) -> None:
         s = self.cfg.sender
-        self.sender_folder_label.setText(
-            f"{s.source_dir or '(설정되지 않음)'}\n{s.interval_minutes}분마다")
-        targets = ", ".join(s.taildrop_targets) if s.taildrop_targets else (s.host or "(대상 없음)")
-        self.sender_targets_label.setText(f"{targets}\n전송 방식: {s.transport}")
+        self.sender_folder_label.setText(s.source_dir or "(설정되지 않음)")
+        self.sender_folder_summary.setText(f"세는 중... · {_every(s.interval_minutes)}")
+        self._folder_summary.start(s.source_dir, _every(s.interval_minutes))
+
+        targets = list(s.taildrop_targets) if s.taildrop_targets else ([s.host] if s.host else [])
+        self.sender_targets_title.setText(f"받는 쪽 {len(targets)}곳" if targets else "받는 쪽")
+        self.sender_targets_label.setText(
+            ("\n".join(targets) if targets else "(대상 없음)") + f"\n전송 방식: {s.transport}")
+
+        work = Path(s.work_dir) if s.work_dir else None
+        used = sum(p.stat().st_size for p in work.rglob("*.7z")) if work and work.is_dir() else 0
+        keep = f"최근 {s.keep_local}개만 남깁니다" if s.keep_local > 0 else "보낸 압축은 바로 지웁니다"
+        self.sender_space_label.setText(f"쓴 공간 {_human_size(used)} · {keep}")
+        self._refresh_history()
+
+    def _refresh_history(self) -> None:
+        rows = history.load(config_dir() / history.FILENAME, 20)
+        self.history_list.clear()
+        for r in rows:
+            if r.get("ok"):
+                result = f"✓ {_human_size(r.get('size') or 0)} · {_duration(r.get('elapsed') or 0)}"
+                if r.get("transport"):
+                    result += f" · {r['transport']}"
+            else:
+                result = f"✗ {r.get('detail') or '실패'}"
+            QTreeWidgetItem(self.history_list, [_when(r.get("at", 0)), r.get("archive") or "-", result])
+        for column in range(2):
+            self.history_list.resizeColumnToContents(column)
+        self._refresh_verdict(rows[0] if rows else None)
+
+    def _refresh_verdict(self, last: dict | None) -> None:
+        if last is None:
+            self.verdict.setText("아직 보낸 적이 없습니다")
+            self.verdict.setStyleSheet("font-size: 17px; font-weight: 700; color: #5d5d5d;")
+            self.status_detail.setText("")
+        elif last.get("ok"):
+            self.verdict.setText("✓ 잘 되고 있습니다")
+            self.verdict.setStyleSheet("font-size: 17px; font-weight: 700; color: #0f7b0f;")
+            self.status_detail.setText(
+                f"마지막 전송 {_when(last['at'])} · {_human_size(last.get('size') or 0)} · "
+                f"{_duration(last.get('elapsed') or 0)} 걸림")
+        else:
+            self.verdict.setText("! 마지막 전송이 실패했습니다")
+            self.verdict.setStyleSheet("font-size: 17px; font-weight: 700; color: #c42b1c;")
+            self.status_detail.setText(f"{_when(last['at'])} · {last.get('detail') or '원인 미상'}")
 
     def _build_receiver_body(self) -> None:
         self.silence_banner = QFrame()
@@ -562,10 +668,11 @@ class MainWindow(QMainWindow):
         self.progress.setValue(pct)
 
     def _on_run_finished(self, result) -> None:
+        # The status card's verdict and 마지막 전송 line are redrawn from the
+        # run history below (_refresh_sender_info), which the engine has
+        # already appended this run to.
         if result.ok:
             self.phase.setText("")
-            self.status_detail.setText(
-                f"마지막 전송 {time.strftime('%H:%M')} · {result.size:,} bytes · {result.seconds:.1f}초 걸림")
         else:
             self.phase.setText(f"실패: {result.detail}")
         self.progress.setValue(0)
@@ -579,17 +686,21 @@ class MainWindow(QMainWindow):
     def _refresh_role_ui(self) -> None:
         is_sender = self.cfg.role == ROLE_SENDER
         self.role_badge.setText("보내는 쪽" if is_sender else "받는 쪽")
-        self.btn_run.setText("지금 실행" if is_sender else "지금 확인")
         self.status.setText("대기")
         self.status_detail.setText("")
         self.next_run.setText("")
         self.phase.setText("")
+        self.btn_run.setText("지금 보내기" if is_sender else "지금 확인")
+        self.verdict.setVisible(is_sender)
+        if is_sender:
+            self._refresh_history()
         self._refresh_buttons()
 
     def _refresh_buttons(self) -> None:
         running = self.engine.running
         self.btn_start.setText("중지" if running else "시작")
         self.btn_pause.setEnabled(running and self.cfg.role == ROLE_SENDER)
+        self.btn_pause.setText("다시 시작" if self.status.text() == "일시중지" else "잠시 멈춤")
         if self.cfg.role == ROLE_RECEIVER:
             # engine.py polls the incoming folder every 5000 ms while running.
             polling = running and self.status.text() != "일시중지"

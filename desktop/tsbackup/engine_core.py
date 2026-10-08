@@ -31,6 +31,7 @@ class RunResult:
     seconds: float = 0.0
     transport: str = ""
     detail: str = ""
+    elapsed: float = 0.0   # the whole pass, set by the caller that timed it
 
 
 def next_retry_state(

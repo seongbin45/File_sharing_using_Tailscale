@@ -147,6 +147,8 @@ class Engine(QObject):
             return
         self.status.emit("압축·전송 중")
         self.next_run.emit("실행 중")
+        import time
+        self._run_started = time.time()
         thread = QThread(self)
         worker = _SenderWorker(self.cfg)
         worker.moveToThread(thread)
@@ -158,6 +160,13 @@ class Engine(QObject):
         thread.start()
 
     def _on_run_finished(self, result) -> None:
+        import time
+
+        from . import history
+        from .config import config_dir
+
+        result.elapsed = time.time() - getattr(self, "_run_started", time.time())
+        history.record(config_dir() / history.FILENAME, result, result.elapsed)
         self.run_finished.emit(result)
         if self._thread:
             self._thread.quit()

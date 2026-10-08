@@ -1145,6 +1145,25 @@ def test_sftp_resume():
               ok and not lines and Path(remote).read_bytes() == data, str(lines))
 
 
+def test_history():
+    section("run history (지난 전송)")
+    from tsbackup import history
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / history.FILENAME
+        for i in range(history.KEEP + 5):
+            history.record(path, engine_core.RunResult(i % 2 == 0, f"a{i}.7z", i, 1.0, "fake"), 2.5)
+        rows = history.load(path, 3)
+        check("newest first", [r["archive"] for r in rows] == [f"a{history.KEEP + 4}.7z",
+                                                               f"a{history.KEEP + 3}.7z",
+                                                               f"a{history.KEEP + 2}.7z"], str(rows))
+        check("records the whole pass's time, not the compression's", rows[0]["elapsed"] == 2.5)
+        check(f"the file is capped at {history.KEEP} runs",
+              len(path.read_text(encoding="utf-8").splitlines()) == history.KEEP)
+        path.write_text(path.read_text(encoding="utf-8") + "not json\n", encoding="utf-8")
+        check("a damaged line is skipped, not fatal", len(history.load(path, 2)) == 2)
+
+
 def test_transport_registry():
     section("transport registry")
     from tsbackup import transports
@@ -1176,6 +1195,7 @@ if __name__ == "__main__":
     test_http_upload_dropped_midway()
     test_http_resume()
     test_sftp_resume()
+    test_history()
     test_transport_registry()
 
     print()

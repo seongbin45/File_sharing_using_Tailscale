@@ -130,6 +130,47 @@ def test_receiver_home(app: QApplication, root: Path) -> None:
         win.close()
 
 
+def test_sender_home(app: QApplication, root: Path) -> None:
+    section("Sender home (design 5b): verdict, folder summary, history")
+    from tsbackup import history
+    from tsbackup.engine_core import RunResult as _RR
+
+    cfg, log, engine = _fresh(root, ROLE_SENDER)
+    conf = root / "send_conf"
+    conf.mkdir(exist_ok=True)
+    src = root / "send_src"
+    (src / "proj_a").mkdir(parents=True, exist_ok=True)
+    (src / "proj_b").mkdir(exist_ok=True)
+    (src / "proj_a" / "f.bin").write_bytes(b"x" * 4096)
+    cfg.sender.source_dir = str(src)
+    cfg.sender.interval_minutes = 1440
+    cfg.sender.taildrop_targets = ["recv-1", "recv-2"]
+    hist = conf / history.FILENAME
+    history.record(hist, _RR(False, "a.7z", detail="연결 실패"), 3)
+    history.record(hist, _RR(True, "PycharmProjects_2026_10_08_04_00.7z", 2048, 1, "taildrop"), 132)
+
+    with patch("app.main_window.config_dir", return_value=conf):
+        win = MainWindow(cfg, log, engine, lambda: None)
+        check("the last run's verdict leads the status card",
+              "잘 되고 있습니다" in win.verdict.text(), win.verdict.text())
+        check("...with the whole pass's time, in words",
+              "2분 12초 걸림" in win.status_detail.text(), win.status_detail.text())
+        check("지난 전송 lists runs newest first",
+              win.history_list.topLevelItemCount() == 2
+              and win.history_list.topLevelItem(1).text(2).startswith("✗"),
+              [win.history_list.topLevelItem(i).text(2) for i in range(win.history_list.topLevelItemCount())])
+        check("받는 쪽 counts its targets", win.sender_targets_title.text() == "받는 쪽 2곳",
+              win.sender_targets_title.text())
+        deadline = time.time() + 10
+        while "세는 중" in win.sender_folder_summary.text() and time.time() < deadline:
+            app.processEvents()
+            time.sleep(0.02)
+        check("the folder summary is filled in off the GUI thread",
+              win.sender_folder_summary.text() == "2개 폴더 · 4.0 KB · 하루 한 번",
+              win.sender_folder_summary.text())
+        win.close()
+
+
 def test_role_switch_rebuild(app: QApplication, root: Path) -> None:
     section("MainWindow rebuilds cleanly on a role switch (settings dialog path)")
     cfg, log, engine = _fresh(root, ROLE_SENDER)
@@ -453,6 +494,7 @@ def main() -> int:
         root = Path(tmp)
         test_main_window_both_roles(app, root)
         test_receiver_home(app, root)
+        test_sender_home(app, root)
         test_role_switch_rebuild(app, root)
         test_settings_dialog(app, root)
         test_tray_signal_wiring(app, root)
