@@ -401,6 +401,11 @@ class SetupWizard(QDialog):
     def accept(self) -> None:
         self._cleanup()
         self.cfg.onboarded = True
+        # Finishing the wizard means "ready to run". Without this the
+        # engine's loop never started on its own (autostart_engine defaults
+        # to off and only the settings dialog turned it on), so a fresh
+        # install never ran a scheduled backup until someone pressed 켜기.
+        self.cfg.autostart_engine = True
         self.cfg.save()
         super().accept()
 

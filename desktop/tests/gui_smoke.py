@@ -406,6 +406,8 @@ def test_wizard_receiver_expiry_escape_hatch(app: QApplication, root: Path) -> N
             wiz._finish_without_confirm()
         check("accepting the warning finishes the wizard despite no confirm",
               wiz.result() == QDialog.DialogCode.Accepted)
+        check("finishing the wizard turns on the engine's autostart - otherwise "
+              "no scheduled run ever starts on its own", cfg.autostart_engine is True)
 
 
 def test_wizard_close_routes_through_reject(app: QApplication, root: Path) -> None:
