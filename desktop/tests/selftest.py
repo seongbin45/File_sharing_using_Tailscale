@@ -445,6 +445,12 @@ def test_pairing():
         check("once accepted, the code's own TTL passing does not expire the "
               "session - the test transfer has its own confirm window",
               not listener.is_expired())
+        try:
+            listener._handle_confirm({"confirm_token": stale["confirm_token"],
+                                       "test_name": "x", "expected_hash": "y"})
+            check("...and /confirm is still answered inside that window", True)
+        except pairing.PairingError as exc:
+            check("...and /confirm is still answered inside that window", False, str(exc))
         listener._session.paired_at = time.time() - pairing.CONFIRM_TTL_SECONDS - 1
         check("is_expired() is true once a paired-but-unconfirmed session "
               "passes its confirm window - the receiver page uses this to offer the "
