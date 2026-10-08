@@ -118,11 +118,11 @@ def _gui() -> int:
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)   # closing the window hides to tray
-    # The screens are drawn light (white cards, dark text). Under Windows
-    # dark mode Qt switched the text to white while the cards stayed white,
-    # so the status card and stat tiles went blank. Hold the light scheme.
-    from PySide6.QtCore import Qt
-    app.styleHints().setColorScheme(Qt.ColorScheme.Light)
+    # Follows the system theme (design guide); every screen colour comes
+    # from app/theme.py's light/dark roles, so dark mode no longer leaves
+    # white text on white cards.
+    from app.theme import apply_font
+    apply_font(app)
 
     from app.single_instance import InstanceGuard
     shown: dict = {"window": None}

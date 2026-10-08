@@ -28,6 +28,8 @@ from PySide6.QtWidgets import (
 from tsbackup import pairing
 from tsbackup.config import ROLE_RECEIVER, ROLE_SENDER, config_dir
 
+from .theme import c
+
 SCHEDULE_PRESETS = [
     ("6시간마다", 360),
     ("하루 한 번", 1440),
@@ -130,7 +132,7 @@ class SetupWizard(QDialog):
         self.code_label = QLabel("")
         self.code_label.setStyleSheet(
             "font-family: 'Cascadia Mono','D2Coding',Consolas,monospace; "
-            "font-size: 26px; font-weight: 700;")
+            f"font-size: 26px; font-weight: 700; color: {c('teal')};")
         code_row.addWidget(self.code_label)
         copy_btn = QPushButton("복사")
         copy_btn.clicked.connect(self._copy_receiver_code)

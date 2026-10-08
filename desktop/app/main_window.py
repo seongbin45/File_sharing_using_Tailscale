@@ -34,6 +34,7 @@ from tsbackup import history, pairing
 from tsbackup.config import ROLE_RECEIVER, ROLE_SENDER, config_dir
 
 from .icons import app_icon
+from .theme import c
 from .settings_dialog import SettingsDialog
 
 PHASE_LABEL = {"compress": "압축 중", "transfer": "전송 중"}
@@ -134,7 +135,7 @@ class _Card(QFrame):
         super().__init__()
         self.setFrameShape(QFrame.StyledPanel)
         self.setStyleSheet(
-            "_Card { background: white; border: 1px solid #dcdcdc; border-radius: 6px; }")
+            f"_Card {{ background: {c('card')}; border: 1px solid {c('border')}; border-radius: 6px; }}")
 
 
 class PairingCodeDialog(QDialog):
@@ -154,7 +155,7 @@ class PairingCodeDialog(QDialog):
         self.code_label = QLabel("...")
         self.code_label.setStyleSheet(
             "font-family: 'Cascadia Mono','D2Coding',Consolas,monospace; "
-            "font-size: 24px; font-weight: 700;")
+            f"font-size: 24px; font-weight: 700; color: {c('teal')};")
         code_row.addWidget(self.code_label)
         copy_btn = QPushButton("복사")
         copy_btn.clicked.connect(self._copy_code)
@@ -262,8 +263,8 @@ class MainWindow(QMainWindow):
         top = QHBoxLayout()
         self.role_badge = QLabel()
         self.role_badge.setStyleSheet(
-            "padding: 3px 10px; background: #eaf2fb; border-radius: 10px; "
-            "color: #0067c0; font-weight: 600;")
+            f"padding: 3px 10px; background: {c('primary_bg')}; border-radius: 10px; "
+            f"color: {c('primary')}; font-weight: 600;")
         top.addWidget(self.role_badge)
         top.addWidget(QLabel(socket.gethostname()))
         top.addStretch(1)
@@ -284,10 +285,10 @@ class MainWindow(QMainWindow):
         self.status.setStyleSheet("font-size: 15px; font-weight: 600;")
         card_lay.addWidget(self.status)
         self.status_detail = QLabel("")
-        self.status_detail.setStyleSheet("color: #5d5d5d;")
+        self.status_detail.setStyleSheet(f"color: {c('muted')};")
         card_lay.addWidget(self.status_detail)
         self.next_run = QLabel("")
-        self.next_run.setStyleSheet("color: #767676;")
+        self.next_run.setStyleSheet(f"color: {c('faint')};")
         card_lay.addWidget(self.next_run)
         root.addWidget(card)
 
@@ -312,7 +313,7 @@ class MainWindow(QMainWindow):
             btns.addWidget(b)
         btns.addStretch(1)
         self.poll_note = QLabel("")
-        self.poll_note.setStyleSheet("color: #767676;")
+        self.poll_note.setStyleSheet(f"color: {c('faint')};")
         btns.addWidget(self.poll_note)
         root.addLayout(btns)
 
@@ -320,7 +321,7 @@ class MainWindow(QMainWindow):
         self.log_toggle = QPushButton("▶ 자세한 기록")
         self.log_toggle.setCheckable(True)
         self.log_toggle.setFlat(True)
-        self.log_toggle.setStyleSheet("text-align: left; border: none; color: #0067c0;")
+        self.log_toggle.setStyleSheet(f"text-align: left; border: none; color: {c('primary')};")
         self.log_toggle.toggled.connect(self._toggle_log)
         root.addWidget(self.log_toggle)
         self.log_view = QPlainTextEdit()
@@ -381,7 +382,7 @@ class MainWindow(QMainWindow):
         self.sender_folder_label.setWordWrap(True)
         fc.addWidget(self.sender_folder_label)
         self.sender_folder_summary = QLabel("")
-        self.sender_folder_summary.setStyleSheet("color: #767676;")
+        self.sender_folder_summary.setStyleSheet(f"color: {c('faint')};")
         fc.addWidget(self.sender_folder_summary)
         row.addWidget(folder_card, 1)
 
@@ -396,7 +397,7 @@ class MainWindow(QMainWindow):
         self.body_container.addLayout(row)
 
         self.sender_space_label = QLabel("")
-        self.sender_space_label.setStyleSheet("color: #767676;")
+        self.sender_space_label.setStyleSheet(f"color: {c('faint')};")
         self.body_container.addWidget(self.sender_space_label)
 
         history_card = _Card()
@@ -448,32 +449,32 @@ class MainWindow(QMainWindow):
     def _refresh_verdict(self, last: dict | None) -> None:
         if last is None:
             self.verdict.setText("아직 보낸 적이 없습니다")
-            self.verdict.setStyleSheet("font-size: 17px; font-weight: 700; color: #5d5d5d;")
+            self.verdict.setStyleSheet(f"font-size: 17px; font-weight: 700; color: {c('muted')};")
             self.status_detail.setText("")
         elif last.get("ok"):
             self.verdict.setText("✓ 잘 되고 있습니다")
-            self.verdict.setStyleSheet("font-size: 17px; font-weight: 700; color: #0f7b0f;")
+            self.verdict.setStyleSheet(f"font-size: 17px; font-weight: 700; color: {c('primary')};")
             self.status_detail.setText(
                 f"마지막 전송 {_when(last['at'])} · {_human_size(last.get('size') or 0)} · "
                 f"{_duration(last.get('elapsed') or 0)} 걸림")
         else:
             self.verdict.setText("! 마지막 전송이 실패했습니다")
-            self.verdict.setStyleSheet("font-size: 17px; font-weight: 700; color: #c42b1c;")
+            self.verdict.setStyleSheet(f"font-size: 17px; font-weight: 700; color: {c('danger')};")
             self.status_detail.setText(f"{_when(last['at'])} · {last.get('detail') or '원인 미상'}")
 
     def _build_receiver_body(self) -> None:
         self.silence_banner = QFrame()
         self.silence_banner.setObjectName("silence")
         self.silence_banner.setStyleSheet(
-            "#silence { background: #fff9e6; border: 1px solid #e8d9a0; border-radius: 7px; }")
+            f"#silence {{ background: {c('warn_bg')}; border: 1px solid {c('warn_border')}; border-radius: 7px; }}")
         banner = QHBoxLayout(self.silence_banner)
         text = QVBoxLayout()
         self.silence_title = QLabel("")
         self.silence_title.setWordWrap(True)
-        self.silence_title.setStyleSheet("color: #6b5600; font-weight: 600;")
+        self.silence_title.setStyleSheet(f"color: {c('warn')}; font-weight: 600;")
         self.silence_detail = QLabel("")
         self.silence_detail.setWordWrap(True)
-        self.silence_detail.setStyleSheet("color: #6b5600;")
+        self.silence_detail.setStyleSheet(f"color: {c('warn')};")
         text.addWidget(self.silence_title)
         text.addWidget(self.silence_detail)
         banner.addLayout(text, 1)
@@ -539,7 +540,7 @@ class MainWindow(QMainWindow):
         value.setStyleSheet("font-size: 18px; font-weight: 600;")
         lay.addWidget(value)
         detail = QLabel("")
-        detail.setStyleSheet("color: #767676; font-size: 11px;")
+        detail.setStyleSheet(f"color: {c('faint')}; font-size: 11px;")
         lay.addWidget(detail)
         return {"card": card, "value": value, "detail": detail}
 

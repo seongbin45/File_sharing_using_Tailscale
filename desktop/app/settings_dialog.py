@@ -24,6 +24,8 @@ from PySide6.QtWidgets import (
 
 from tsbackup.config import ROLE_RECEIVER, ROLE_SENDER, TRANSPORTS
 
+from .theme import c
+
 
 class SettingsDialog(QDialog):
     def __init__(self, cfg, parent=None) -> None:
@@ -202,7 +204,7 @@ class SettingsDialog(QDialog):
         btn = QPushButton(f"▶ {label}")
         btn.setCheckable(True)
         btn.setFlat(True)
-        btn.setStyleSheet("text-align: left; border: none; color: #0067c0;")
+        btn.setStyleSheet(f"text-align: left; border: none; color: {c('primary')};")
         advanced.setVisible(False)
 
         def _toggle(checked: bool) -> None:
