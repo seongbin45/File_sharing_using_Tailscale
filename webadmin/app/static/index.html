@@ -51,6 +51,7 @@
         <button class="tab is-active" data-tab="overview">개요</button>
         <button class="tab" data-tab="terminal">터미널</button>
         <button class="tab" data-tab="settings">연결 설정</button>
+        <button class="tab" data-tab="audit" id="tab-audit">감사 로그</button>
       </div>
       <div class="tabbar-right">
         <span id="sel-host">-</span>
@@ -69,8 +70,17 @@
           <span class="spacer"></span>
           <span class="note" id="action-note"></span>
         </div>
+        <div class="gate-note" id="gate-note" hidden></div>
 
         <div class="grid2" id="overview-panels"></div>
+
+        <div class="panel" id="caps-panel" style="margin-top: 22px;" hidden>
+          <div class="panel-head">
+            <span class="panel-title">이 신원이 할 수 있는 것</span>
+            <span class="panel-note">access.json</span>
+          </div>
+          <div id="caps"></div>
+        </div>
 
         <div class="panel" id="log-panel" style="margin-top: 22px;">
           <div class="panel-head">
@@ -208,6 +218,7 @@
                   <span class="m-post">POST</span><span>/api/servers</span>
                   <span class="m-post">POST</span><span>/api/servers/{id}/test</span>
                   <span class="m-ws">WS</span><span>/api/hosts/{id}/terminal</span>
+                  <span class="m-get">GET</span><span>/api/audit?lines=40</span>
                 </div>
               </div>
             </div>
@@ -223,6 +234,33 @@
             </div>
           </div>
 
+        </div>
+      </div>
+    </div>
+
+    <!-- ------------------------------------------------- 감사 로그 -->
+    <div class="pane" data-pane="audit">
+      <div class="pane-scroll">
+        <div class="panel">
+          <div class="panel-head">
+            <span class="panel-title">감사 로그 — audit.log (JSONL, 해시 체인)</span>
+            <span class="panel-note">GET /api/audit?lines=40 · admin 전용</span>
+          </div>
+          <div id="audit-rows"></div>
+        </div>
+
+        <div class="grid2" style="margin-top: 20px;">
+          <div class="panel">
+            <div class="panel-head"><span class="panel-title">체인 머리 해시</span></div>
+            <div class="panel-body" id="audit-chain"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><span class="panel-title">기록하지 않는 것</span></div>
+            <div class="prose">조회는 남기지 않습니다. 10초마다 도는 대시보드 폴링이 한 달에 몇 줄뿐인
+              중요한 기록을 파묻기 때문입니다. 남기는 것은 거부 · 즉시 실행 · 일시 중지와 재개 ·
+              터미널 열기 · 연결 설정 저장 · 콘솔 시작뿐입니다. <strong>로그인과 터미널 닫기는 아직
+              기록하지 않습니다.</strong></div>
+          </div>
         </div>
       </div>
     </div>

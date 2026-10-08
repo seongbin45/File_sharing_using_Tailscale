@@ -599,9 +599,109 @@ function applyLevel() {
   deny('#term-connect, #open-terminal', 'admin', '터미널은 관리자만 열 수 있습니다');
   deny('#save-btn, #test-conn, #add-server', 'admin', '연결 설정은 관리자만 바꿀 수 있습니다');
 
+  deny('#tab-audit', 'admin', '감사 로그는 관리자만 볼 수 있습니다');
+
   if (!atLeast('admin')) {
     document.querySelectorAll('.quick .btn').forEach((b) => { b.disabled = true; });
   }
+  renderCaps();
+}
+
+const CAPS = [
+  { label: '대시보드 · 상태 · 로그 조회', note: 'viewer 부터', need: 'viewer' },
+  { label: '즉시 실행 · 스케줄 일시중지/재개', note: 'operator 부터. 범위가 정해진 동작입니다', need: 'operator' },
+  { label: '터미널 (셸)', note: 'admin 전용. 셸이 있으면 스크립트를 고치고 .env 를 읽을 수 있습니다', need: 'admin' },
+  { label: '연결 설정 편집', note: 'admin 전용. 주소를 바꾸면 셸이 그리로 붙습니다', need: 'admin' },
+  { label: '감사 로그 조회', note: 'admin 전용. 누가 무엇을 했는지가 그 자체로 보호 대상입니다', need: 'admin' },
+];
+
+function renderCaps() {
+  // Only tailnet mode has levels; under a shared password everyone is admin
+  // and a list of green dots would say nothing.
+  const tailnet = state.meta && state.meta.auth && state.meta.auth.mode === 'tailscale';
+  $('#caps-panel').hidden = !tailnet;
+  const gate = $('#gate-note');
+  gate.hidden = !tailnet;
+  if (!tailnet) return;
+
+  gate.className = 'gate-note ' + (atLeast('admin') ? 'v-ok' : 'v-warn');
+  gate.textContent = atLeast('admin') ? '모든 동작이 허용됩니다.'
+    : atLeast('operator') ? '터미널과 연결 설정은 admin 전용입니다.'
+      : '읽기만 허용됩니다. 실행 · 일시중지는 operator 부터입니다.';
+
+  const box = $('#caps');
+  box.textContent = '';
+  for (const c of CAPS) {
+    const ok = atLeast(c.need);
+    const row = el('div', 'cap' + (ok ? '' : ' is-off'));
+    row.append(el('span', 'cap-mark' + (ok ? ' on' : ''), ok ? '●' : '·'));
+    const text = el('div', 'cap-text');
+    text.append(el('span', 'cap-label', c.label));
+    text.append(el('span', 'cap-note', c.note));
+    row.append(text);
+    box.append(row);
+  }
+}
+
+// ----------------------------------------------------------------- audit
+
+const AUDIT_KEYS = new Set(['at', 'event', 'who', 'level', 'client', 'prev', 'hash']);
+
+function auditDetail(e) {
+  return Object.entries(e)
+    .filter(([k, v]) => !AUDIT_KEYS.has(k) && v !== null && v !== undefined)
+    .map(([k, v]) => `${k}=${v}`)
+    .join(' ');
+}
+
+async function loadAudit() {
+  const rows = $('#audit-rows');
+  const chain = $('#audit-chain');
+  rows.textContent = '';
+  chain.textContent = '';
+  if (!atLeast('admin')) {
+    rows.append(el('div', 'empty', '감사 로그는 관리자만 볼 수 있습니다.'));
+    return;
+  }
+  rows.append(el('div', 'empty', '읽는 중...'));
+  let data;
+  try {
+    data = await api('/api/audit?lines=40');
+  } catch (err) {
+    rows.textContent = '';
+    rows.append(el('div', 'empty', String(err)));
+    return;
+  }
+
+  rows.textContent = '';
+  const events = (data.events || []).slice().reverse();   // newest first
+  if (!events.length) rows.append(el('div', 'empty', '기록이 없습니다.'));
+  for (const e of events) {
+    const row = el('div', 'audit-row');
+    const at = el('span', 'a-at', String(e.at || '').replace('T', ' ').slice(0, 19));
+    at.title = e.at;
+    row.append(at);
+    const kind = e.event === 'denied' ? 'bad' : String(e.event).startsWith('terminal') ? 'term' : 'act';
+    row.append(el('span', 'a-event ' + kind, e.event));
+    row.append(el('span', 'a-who', e.who));
+    row.append(el('span', 'a-level', e.level || '-'));
+    const detail = auditDetail(e);
+    const d = el('span', 'a-detail', detail || '-');
+    d.title = detail;
+    row.append(d);
+    row.append(el('span', 'a-client', e.client || '-'));
+    rows.append(row);
+  }
+
+  const st = data.status || {};
+  const v = data.verify || {};
+  chain.append(fields([
+    ['head', v.head || st.head, 'v-head'],
+    ['줄 수', v.checked != null ? v.checked.toLocaleString() : null],
+    ['무결성', v.ok ? '체인 일치' : `${v.problem || '확인 실패'} (${v.line}번째 줄)`, v.ok ? 'v-ok' : 'v-bad'],
+    st.enabled === false ? ['기록', `중단됨 — ${st.reason}`, 'v-bad'] : null,
+    ['외부 고정', '없음 — 머리 해시를 밖에 남겨야 의미가 생깁니다', 'v-warn'],
+  ]));
 }
 
 // ------------------------------------------------------------------ tabs
@@ -613,6 +713,8 @@ function selectTab(name) {
   if (name === 'terminal' && state.fit) {
     setTimeout(() => { try { state.fit.fit(); } catch (e) { /* ignore */ } }, 0);
   }
+  // Not on the 10-second timer: reading it walks the whole hash chain.
+  if (name === 'audit') loadAudit();
 }
 
 function startTimer() {
