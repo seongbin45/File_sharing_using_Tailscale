@@ -16,6 +16,7 @@ hides to the tray and the engine keeps going.
 
 from __future__ import annotations
 
+import shutil
 import socket
 import time
 from pathlib import Path
@@ -23,9 +24,9 @@ from pathlib import Path
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QFrame, QHBoxLayout, QLabel, QListWidget,
-    QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar,
-    QPushButton, QVBoxLayout, QWidget,
+    QApplication, QDialog, QFrame, QHBoxLayout, QLabel, QMainWindow,
+    QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QTreeWidget,
+    QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from tsbackup import pairing
@@ -58,6 +59,32 @@ def _dir_size(path: Path) -> int:
         except OSError:
             pass
     return total
+
+
+def _every(minutes) -> str:
+    """An interval the way the mockup says it: "하루 한 번", not "1440분마다"."""
+    m = int(minutes or 0)
+    if m == 1440:
+        return "하루 한 번"
+    if m == 10080:
+        return "일주일에 한 번"
+    if m and m % 60 == 0:
+        return f"{m // 60}시간마다"
+    return f"{m}분마다"
+
+
+def _sender_of(folder: Path, registry: dict) -> str:
+    """Who sent an unpacked snapshot, from the .ts_sender.json marker the
+    sender embeds in every archive. "-" when it carries none (an unpaired
+    sender) - never a guess."""
+    import json
+
+    try:
+        info = json.loads((folder / ".ts_sender.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "-"
+    device_id = str(info.get("device_id", ""))
+    return registry.get(device_id, {}).get("device_name") or device_id or "-"
 
 
 class _Card(QFrame):
@@ -239,6 +266,9 @@ class MainWindow(QMainWindow):
         for b in (self.btn_start, self.btn_pause, self.btn_run):
             btns.addWidget(b)
         btns.addStretch(1)
+        self.poll_note = QLabel("")
+        self.poll_note.setStyleSheet("color: #767676;")
+        btns.addWidget(self.poll_note)
         root.addLayout(btns)
 
         # log, collapsed by default - see module docstring
@@ -326,13 +356,31 @@ class MainWindow(QMainWindow):
         self.sender_targets_label.setText(f"{targets}\n전송 방식: {s.transport}")
 
     def _build_receiver_body(self) -> None:
-        self.silence_banner = QLabel("")
-        self.silence_banner.setWordWrap(True)
+        self.silence_banner = QFrame()
+        self.silence_banner.setObjectName("silence")
         self.silence_banner.setStyleSheet(
-            "padding: 12px 14px; background: #fff9e6; border: 1px solid #e8d9a0; "
-            "border-radius: 7px; color: #6b5600;")
+            "#silence { background: #fff9e6; border: 1px solid #e8d9a0; border-radius: 7px; }")
+        banner = QHBoxLayout(self.silence_banner)
+        text = QVBoxLayout()
+        self.silence_title = QLabel("")
+        self.silence_title.setWordWrap(True)
+        self.silence_title.setStyleSheet("color: #6b5600; font-weight: 600;")
+        self.silence_detail = QLabel("")
+        self.silence_detail.setWordWrap(True)
+        self.silence_detail.setStyleSheet("color: #6b5600;")
+        text.addWidget(self.silence_title)
+        text.addWidget(self.silence_detail)
+        banner.addLayout(text, 1)
+        self.silence_ack = QPushButton("확인했음")
+        self.silence_ack.clicked.connect(self._ack_silence)
+        banner.addWidget(self.silence_ack, 0, Qt.AlignTop)
         self.silence_banner.setVisible(False)
         self.body_container.addWidget(self.silence_banner)
+        # (device_id, last_seen) pairs the person dismissed. Keyed on
+        # last_seen so a sender that comes back and then goes quiet again
+        # is a new silence, shown again.
+        self._acked_silence: set[tuple[str, float]] = set()
+        self._shown_silence: tuple[str, float] | None = None
 
         stats_row = QHBoxLayout()
         self.stat_stored = self._stat_tile("보관 중")
@@ -344,8 +392,17 @@ class MainWindow(QMainWindow):
 
         received_card = _Card()
         rc = QVBoxLayout(received_card)
-        rc.addWidget(QLabel("받은 것"))
-        self.received_list = QListWidget()
+        head = QHBoxLayout()
+        head.addWidget(QLabel("받은 것"))
+        head.addStretch(1)
+        open_btn = QPushButton("폴더 열기")
+        open_btn.clicked.connect(self._open_unpack_dir)
+        head.addWidget(open_btn)
+        rc.addLayout(head)
+        self.received_list = QTreeWidget()
+        self.received_list.setHeaderLabels(["받은 시각", "보낸 쪽", "크기", "폴더"])
+        self.received_list.setRootIsDecorated(False)
+        self.received_list.setAlternatingRowColors(True)
         rc.addWidget(self.received_list, 1)
         self.body_container.addWidget(received_card, 1)
 
@@ -355,6 +412,18 @@ class MainWindow(QMainWindow):
         pair_row.addWidget(pair_btn)
         pair_row.addStretch(1)
         self.body_container.addLayout(pair_row)
+
+    def _ack_silence(self) -> None:
+        if self._shown_silence:
+            self._acked_silence.add(self._shown_silence)
+        self.silence_banner.setVisible(False)
+
+    def _open_unpack_dir(self) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        if self.cfg.receiver.unpack_dir:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(self.cfg.receiver.unpack_dir))
 
     def _stat_tile(self, title: str) -> dict:
         card = _Card()
@@ -388,30 +457,42 @@ class MainWindow(QMainWindow):
             self.stat_stored["detail"].setText(
                 f"가장 오래된 것 {time.strftime('%m월 %d일', time.localtime(oldest.stat().st_mtime))}")
 
-        total = _dir_size(unpack_dir) if unpack_dir else 0
-        self.stat_space["value"].setText(_human_size(total))
+        sizes = {f: _dir_size(f) for f in folders}
+        self.stat_space["value"].setText(_human_size(sum(sizes.values())))
+        try:
+            free = shutil.disk_usage(unpack_dir).free if unpack_dir and unpack_dir.is_dir() else None
+        except OSError:
+            free = None
+        self.stat_space["detail"].setText(f"남은 공간 {_human_size(free)}" if free is not None else "")
 
         known_path = config_dir() / pairing.KNOWN_SENDERS_FILENAME
         registry = pairing.load_known_senders(known_path)
         overdue = pairing.overdue_senders(registry)
         self.stat_senders["value"].setText(f"{len(registry)}곳")
-        if overdue:
-            self.stat_senders["detail"].setText(f"{len(overdue)}곳 응답 없음")
-            worst = overdue[0]
+        self.stat_senders["detail"].setText(f"{len(overdue)}곳 응답 없음" if overdue else "")
+        unacked = [o for o in overdue
+                   if (o["device_id"], o.get("last_seen")) not in self._acked_silence]
+        if unacked:
+            worst = unacked[0]
             days = int(worst["elapsed_seconds"] // 86400)
-            self.silence_banner.setText(
-                f"{worst.get('device_name', worst['device_id'])} 에서 "
-                f"{max(days, 1)}일째 오지 않습니다. 그 컴퓨터가 꺼져 있거나 "
-                "tailnet 에서 빠졌을 수 있습니다.")
+            self.silence_title.setText(
+                f"{worst.get('device_name', worst['device_id'])} 에서 {max(days, 1)}일째 오지 않습니다")
+            self.silence_detail.setText(
+                f"{_every(worst.get('interval_minutes'))} 오기로 되어 있습니다. "
+                "그 컴퓨터가 꺼져 있거나 tailnet 에서 빠졌을 수 있습니다.")
+            self._shown_silence = (worst["device_id"], worst.get("last_seen"))
             self.silence_banner.setVisible(True)
         else:
-            self.stat_senders["detail"].setText("")
+            self._shown_silence = None
             self.silence_banner.setVisible(False)
 
         self.received_list.clear()
         for folder in folders[:50]:
             when = time.strftime("%m-%d %H:%M", time.localtime(folder.stat().st_mtime))
-            QListWidgetItem(f"{when}   {folder.name}", self.received_list)
+            QTreeWidgetItem(self.received_list, [
+                when, _sender_of(folder, registry), _human_size(sizes[folder]), folder.name])
+        for column in range(3):
+            self.received_list.resizeColumnToContents(column)
 
     # ------------------------------------------------------------- wiring
 
@@ -509,6 +590,12 @@ class MainWindow(QMainWindow):
         running = self.engine.running
         self.btn_start.setText("중지" if running else "시작")
         self.btn_pause.setEnabled(running and self.cfg.role == ROLE_SENDER)
+        if self.cfg.role == ROLE_RECEIVER:
+            # engine.py polls the incoming folder every 5000 ms while running.
+            polling = running and self.status.text() != "일시중지"
+            self.poll_note.setText("5초마다 확인 중" if polling else "확인 멈춤")
+        else:
+            self.poll_note.setText("")
 
     # -------------------------------------------------------------- close
 

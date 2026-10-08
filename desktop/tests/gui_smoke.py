@@ -92,6 +92,44 @@ def test_main_window_both_roles(app: QApplication, root: Path) -> None:
     win2.close()
 
 
+def test_receiver_home(app: QApplication, root: Path) -> None:
+    section("Receiver home (design 5b): who sent what, free space, silence acknowledged")
+    import json as _json
+
+    from tsbackup import pairing as pairing_module
+
+    cfg, log, engine = _fresh(root, ROLE_RECEIVER)
+    conf = root / "recv_conf"
+    conf.mkdir(exist_ok=True)
+    snap = Path(cfg.receiver.unpack_dir) / "PycharmProjects_2026_10_08_04_00"
+    snap.mkdir(parents=True, exist_ok=True)
+    (snap / "main.py").write_bytes(b"x" * 2048)
+    (snap / ".ts_sender.json").write_text(_json.dumps({"device_id": "dev-a"}), encoding="utf-8")
+    long_ago = time.time() - 3 * 86400
+    (conf / pairing_module.KNOWN_SENDERS_FILENAME).write_text(_json.dumps({
+        "dev-a": {"device_name": "laptop-a", "interval_minutes": 1440,
+                  "first_seen": long_ago, "last_seen": long_ago},
+    }), encoding="utf-8")
+
+    with patch("app.main_window.config_dir", return_value=conf):
+        win = MainWindow(cfg, log, engine, lambda: None)
+        win.show()
+        row = win.received_list.topLevelItem(0)
+        check("a received snapshot shows who sent it, from its marker",
+              row is not None and row.text(1) == "laptop-a", row and row.text(1))
+        check("...and its size", row is not None and row.text(2) == "2.0 KB", row and row.text(2))
+        check("free space is shown under 쓴 공간",
+              win.stat_space["detail"].text().startswith("남은 공간"), win.stat_space["detail"].text())
+        check("a silent sender raises the banner, saying how often it should come",
+              win.silence_banner.isVisible() and "laptop-a" in win.silence_title.text()
+              and "하루 한 번" in win.silence_detail.text(), win.silence_detail.text())
+        win.silence_ack.click()
+        win._refresh_receiver_stats()
+        check("확인했음 hides it, and the next refresh keeps it hidden",
+              not win.silence_banner.isVisible())
+        win.close()
+
+
 def test_role_switch_rebuild(app: QApplication, root: Path) -> None:
     section("MainWindow rebuilds cleanly on a role switch (settings dialog path)")
     cfg, log, engine = _fresh(root, ROLE_SENDER)
@@ -414,6 +452,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         root = Path(tmp)
         test_main_window_both_roles(app, root)
+        test_receiver_home(app, root)
         test_role_switch_rebuild(app, root)
         test_settings_dialog(app, root)
         test_tray_signal_wiring(app, root)
