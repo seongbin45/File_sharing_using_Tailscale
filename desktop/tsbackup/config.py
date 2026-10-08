@@ -201,25 +201,25 @@ class AppConfig:
         if self.role == ROLE_SENDER:
             s = self.sender
             if not s.source_dir:
-                out.append("압축할 대상 폴더가 설정되지 않았습니다.")
+                out.append("보낼 폴더를 아직 정하지 않았어요.")
             elif not Path(s.source_dir).is_dir():
-                out.append(f"대상 폴더가 없습니다: {s.source_dir}")
+                out.append(f"보낼 폴더가 없어요: {s.source_dir}")
             if not s.work_dir:
-                out.append("작업 폴더가 설정되지 않았습니다.")
+                out.append("압축을 만들 작업 폴더를 아직 정하지 않았어요.")
             if s.transport == "taildrop" and not s.taildrop_targets:
-                out.append("Taildrop 대상 기기 이름이 없습니다.")
+                out.append("받는 컴퓨터를 아직 정하지 않았어요.")
             if s.transport in ("sftp", "http") and not s.host:
-                out.append(f"{s.transport} 대상 host 가 없습니다.")
+                out.append("받는 컴퓨터의 주소를 아직 정하지 않았어요.")
             if s.interval_minutes < 1:
-                out.append("트리거 간격은 1분 이상이어야 합니다.")
+                out.append("보내는 간격은 1분 이상이어야 해요.")
         else:
             r = self.receiver
             if not r.incoming_dir:
-                out.append("수신 폴더가 설정되지 않았습니다.")
+                out.append("받을 폴더를 아직 정하지 않았어요.")
             if not r.unpack_dir:
-                out.append("압축 해제 폴더가 설정되지 않았습니다.")
+                out.append("풀어 둘 폴더를 아직 정하지 않았어요.")
             if self.receiver_uses_http() and not r.http_token:
-                out.append("HTTP 수신에는 토큰이 필요합니다. 누구나 업로드할 수 있게 두지 마십시오.")
+                out.append("HTTP로 받으려면 토큰이 있어야 해요. 아무나 올릴 수 없게 고급 설정에서 정해 주세요.")
         return out
 
     def receiver_uses_http(self) -> bool:

@@ -173,7 +173,7 @@ def _gui() -> int:
         tray = Tray(window, engine, do_quit)
         tray.show()
     else:
-        log.line("시스템 트레이를 쓸 수 없습니다. 창을 닫으면 종료됩니다.")
+        log.line("트레이를 쓸 수 없어서, 창을 닫으면 앱도 꺼져요.")
         cfg.minimize_to_tray = False
 
     window.show()

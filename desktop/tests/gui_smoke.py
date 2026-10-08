@@ -122,11 +122,16 @@ def test_receiver_home(app: QApplication, root: Path) -> None:
               win.stat_space["detail"].text().startswith("남은 공간"), win.stat_space["detail"].text())
         check("a silent sender raises the banner, saying how often it should come",
               win.silence_banner.isVisible() and "laptop-a" in win.silence_title.text()
-              and "하루 한 번" in win.silence_detail.text(), win.silence_detail.text())
+              and "하루에 한 번" in win.silence_detail.text(), win.silence_detail.text())
+        check("the latest unpacked copy is named: when, from whom, how many folders",
+              win.latest_copy.text().startswith("마지막으로 확인된 복사본")
+              and "laptop-a" in win.latest_copy.text(), win.latest_copy.text())
         win.silence_ack.click()
         win._refresh_receiver_stats()
-        check("확인했음 hides it, and the next refresh keeps it hidden",
+        check("확인했어요 hides the banner, and the next refresh keeps it hidden",
               not win.silence_banner.isVisible())
+        check("...but the verdict still says a computer is not coming",
+              "오지 않는 컴퓨터" in win.verdict.text(), win.verdict.text())
         win.close()
 
 
@@ -151,22 +156,27 @@ def test_sender_home(app: QApplication, root: Path) -> None:
 
     with patch("app.main_window.config_dir", return_value=conf):
         win = MainWindow(cfg, log, engine, lambda: None)
-        check("the last run's verdict leads the status card",
-              "잘 되고 있습니다" in win.verdict.text(), win.verdict.text())
+        check("the last run's verdict leads the status card - 보냈어요, not a "
+              "claim the far side unpacked it, so not the blue success colour",
+              win.verdict.text() == "✓ 보냈어요" and "color" not in win.verdict.styleSheet(),
+              (win.verdict.text(), win.verdict.styleSheet()))
         check("...with the whole pass's time, in words",
-              "2분 12초 걸림" in win.status_detail.text(), win.status_detail.text())
+              "2분 12초 걸렸어요" in win.status_detail.text(), win.status_detail.text())
         check("지난 전송 lists runs newest first",
               win.history_list.topLevelItemCount() == 2
               and win.history_list.topLevelItem(1).text(2).startswith("✗"),
               [win.history_list.topLevelItem(i).text(2) for i in range(win.history_list.topLevelItemCount())])
-        check("받는 쪽 counts its targets", win.sender_targets_title.text() == "받는 쪽 2곳",
+        check("받는 컴퓨터 counts its targets", win.sender_targets_title.text() == "받는 컴퓨터 2대",
               win.sender_targets_title.text())
+        check("the home screen does not name the transport",
+              "taildrop" not in win.sender_targets_label.text()
+              and "taildrop" not in win.history_list.topLevelItem(0).text(2))
         deadline = time.time() + 10
         while "세는 중" in win.sender_folder_summary.text() and time.time() < deadline:
             app.processEvents()
             time.sleep(0.02)
         check("the folder summary is filled in off the GUI thread",
-              win.sender_folder_summary.text() == "2개 폴더 · 4.0 KB · 하루 한 번",
+              win.sender_folder_summary.text() == "2개 폴더 · 4.0 KB · 하루에 한 번",
               win.sender_folder_summary.text())
         win.close()
 

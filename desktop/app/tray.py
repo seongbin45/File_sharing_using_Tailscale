@@ -25,6 +25,7 @@ from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 from tsbackup.engine_core import MAX_RETRIES
 from update_manager.paths import UM_EXE_NAME, find_tsbackup_install_dir
 
+from . import wording
 from .icons import app_icon
 
 
@@ -46,12 +47,14 @@ class Tray(QSystemTrayIcon):
         self.engine = engine
         self._on_quit = on_quit
         self._error = False
+        self._paused = False
         self.setToolTip("TS Backup")
 
         menu = QMenu()
         self.act_open = QAction("열기", menu)
-        self.act_run = QAction("지금 실행", menu)
-        self.act_pause = QAction("일시중지", menu)
+        self.act_run = QAction(
+            "지금 확인" if window.cfg.role == "receiver" else "지금 보내기", menu)
+        self.act_pause = QAction("잠시 멈춤", menu)
         self.act_quit = QAction("종료", menu)
         menu.addAction(self.act_open)
         menu.addAction(self.act_run)
@@ -112,13 +115,14 @@ class Tray(QSystemTrayIcon):
                 self._open()
 
     def _toggle_pause(self) -> None:
-        if self.engine.busy or self.act_pause.text() == "일시중지":
+        if self.engine.busy or not self._paused:
             self.engine.pause()
         else:
             self.engine.resume()
 
     def _on_status(self, text: str) -> None:
-        self.setToolTip(f"TS Backup — {text}")
+        self.setToolTip(f"TS Backup — {wording.status(text)}")
+        self._paused = text == "일시중지"
         state = "idle"
         if text in ("실행 중", "압축·전송 중", "수신 대기"):
             state = "running"
@@ -130,7 +134,7 @@ class Tray(QSystemTrayIcon):
             # follows it, rather than snapping straight back to normal.
             state = "error"
         self.setIcon(app_icon(state))
-        self.act_pause.setText("재개" if text == "일시중지" else "일시중지")
+        self.act_pause.setText("다시 시작" if self._paused else "잠시 멈춤")
 
     def _on_run_result(self, result) -> None:
         if result.ok and self._error:
@@ -140,9 +144,12 @@ class Tray(QSystemTrayIcon):
         self._error = True
         self.setIcon(app_icon("error"))
         self.showMessage(
-            "백업 실패",
-            f"{MAX_RETRIES}번 자동으로 다시 시도했지만 계속 실패했습니다: "
-            f"{result.detail}\n다음 정해진 시각에 다시 시도합니다.",
+            "백업이 안 됐어요",
+            # The archive is parked in pending/ and the next run resends it
+            # (tsbackup/pending.py), so this promise is true. The raw reason
+            # is in the log, not in a toast.
+            f"받는 컴퓨터에 닿지 못했어요. {MAX_RETRIES}번 다시 해 봤어요. "
+            "압축은 만들어 뒀고, 다음 전송 때 같이 보낼게요.",
             QSystemTrayIcon.Warning,
             10000,
         )

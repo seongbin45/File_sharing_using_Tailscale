@@ -33,11 +33,12 @@ from PySide6.QtWidgets import (
 from tsbackup import history, pairing
 from tsbackup.config import ROLE_RECEIVER, ROLE_SENDER, config_dir
 
+from . import wording
 from .icons import app_icon
 from .theme import c
 from .settings_dialog import SettingsDialog
 
-PHASE_LABEL = {"compress": "압축 중", "transfer": "전송 중"}
+PHASE_LABEL = {"compress": "압축하고 있어요", "transfer": "보내고 있어요"}
 STAT_CHECK_INTERVAL_MS = 30_000  # how often the receiver home re-scans
 
 
@@ -64,10 +65,10 @@ def _dir_size(path: Path) -> int:
 
 
 def _every(minutes) -> str:
-    """An interval the way the mockup says it: "하루 한 번", not "1440분마다"."""
+    """An interval the way the guide says it: "하루에 한 번", not "1440분마다"."""
     m = int(minutes or 0)
     if m == 1440:
-        return "하루 한 번"
+        return "하루에 한 번"
     if m == 10080:
         return "일주일에 한 번"
     if m and m % 60 == 0:
@@ -108,10 +109,22 @@ class _FolderSummary(QObject):
     def _run(self, folder: str, suffix: str) -> None:
         path = Path(folder)
         if not folder or not path.is_dir():
-            self.done.emit(f"폴더가 없습니다 · {suffix}")
+            self.done.emit(f"폴더가 없어요 · {suffix}")
             return
         subdirs = sum(1 for p in path.iterdir() if p.is_dir())
         self.done.emit(f"{subdirs}개 폴더 · {_human_size(_dir_size(path))} · {suffix}")
+
+
+def _snapshot_label(name: str) -> str:
+    """"10월 07일 04:00 기준" from an archive or folder name, instead of
+    showing the file name itself."""
+    from tsbackup.archiver import STAMP_RE
+
+    m = STAMP_RE.search(name if name.endswith(".7z") else name + ".7z")
+    if not m:
+        return name or "-"
+    y, mo, d, h, mi = m.group(1).split("_")
+    return f"{mo}월 {d}일 {h}:{mi} 기준"
 
 
 def _sender_of(folder: Path, registry: dict) -> str:
@@ -162,8 +175,8 @@ class PairingCodeDialog(QDialog):
         code_row.addWidget(copy_btn)
         code_row.addStretch(1)
         lay.addLayout(code_row)
-        lay.addWidget(QLabel("tailnet 안에서만 유효 · 10분 후 만료 · 한 번 쓰면 소멸"))
-        self.pair_status = QLabel("대기 중...")
+        lay.addWidget(QLabel("보내는 컴퓨터에 이 코드를 넣어 주세요. 10분 동안, 한 번만 쓸 수 있어요."))
+        self.pair_status = QLabel("보내는 컴퓨터를 기다리고 있어요")
         lay.addWidget(self.pair_status)
 
         row = QHBoxLayout()
@@ -184,7 +197,7 @@ class PairingCodeDialog(QDialog):
         ip = pairing.local_tailscale_ip()
         if not ip:
             self.code_label.setText("-")
-            self.pair_status.setText("Tailscale 이 연결되어 있는지 확인하십시오.")
+            self.pair_status.setText("Tailscale이 켜져 있는지 확인해 주세요.")
             return
         known_path = config_dir() / pairing.KNOWN_SENDERS_FILENAME
         self._listener = pairing.PairingListener(self.cfg, known_path, log=self._log)
@@ -194,7 +207,7 @@ class PairingCodeDialog(QDialog):
     def _regenerate(self) -> None:
         if self._listener:
             self.code_label.setText(self._listener.regenerate())
-            self.pair_status.setText("대기 중...")
+            self.pair_status.setText("보내는 컴퓨터를 기다리고 있어요")
             if not self._poll.isActive():
                 self._poll.start(1000)
 
@@ -213,10 +226,13 @@ class PairingCodeDialog(QDialog):
         # block here), but the status text should say so accurately rather
         # than implying "connected" already means "done."
         if self._listener.is_confirmed():
-            self.pair_status.setText("시험 전송까지 확인되었습니다.")
+            self.pair_status.setText("시험 파일까지 잘 받았어요. 이제 닫아도 돼요.")
+            self._poll.stop()
+        elif self._listener.is_expired():
+            self.pair_status.setText("코드가 만료됐어요. 새 코드를 만들어 주세요.")
             self._poll.stop()
         elif self._listener.is_paired():
-            self.pair_status.setText("연결됨 - 보내는 쪽의 시험 전송을 기다리는 중...")
+            self.pair_status.setText("연결됐어요. 시험 파일이 오기를 기다리고 있어요.")
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt override)
         self._poll.stop()
@@ -276,13 +292,16 @@ class MainWindow(QMainWindow):
         # status card - the one thing worth knowing at a glance
         card = _Card()
         card_lay = QVBoxLayout(card)
-        # Sender only: the answer to "is it okay?" from the last recorded
-        # run. self.status stays the engine's own state (대기 / 압축·전송 중).
+        # The answer to "is it okay?" - the sender's from its run history,
+        # the receiver's from what actually arrived and unpacked. Below it,
+        # what the engine is doing right now; the raw engine string is kept
+        # in _engine_status for comparisons, the screen gets wording.status.
         self.verdict = QLabel("")
         self.verdict.setStyleSheet("font-size: 17px; font-weight: 700;")
         card_lay.addWidget(self.verdict)
-        self.status = QLabel("대기")
-        self.status.setStyleSheet("font-size: 15px; font-weight: 600;")
+        self._engine_status = "대기"
+        self.status = QLabel(wording.status("대기"))
+        self.status.setStyleSheet(f"color: {c('muted')};")
         card_lay.addWidget(self.status)
         self.status_detail = QLabel("")
         self.status_detail.setStyleSheet(f"color: {c('muted')};")
@@ -306,9 +325,9 @@ class MainWindow(QMainWindow):
 
         # buttons
         btns = QHBoxLayout()
-        self.btn_start = QPushButton("시작")
-        self.btn_pause = QPushButton("일시중지")
-        self.btn_run = QPushButton("지금 실행")
+        self.btn_start = QPushButton("켜기")
+        self.btn_pause = QPushButton("잠시 멈춤")
+        self.btn_run = QPushButton("지금 보내기")
         for b in (self.btn_start, self.btn_pause, self.btn_run):
             btns.addWidget(b)
         btns.addStretch(1)
@@ -388,7 +407,7 @@ class MainWindow(QMainWindow):
 
         targets_card = _Card()
         tc = QVBoxLayout(targets_card)
-        self.sender_targets_title = QLabel("받는 쪽")
+        self.sender_targets_title = QLabel("받는 컴퓨터")
         tc.addWidget(self.sender_targets_title)
         self.sender_targets_label = QLabel("")
         self.sender_targets_label.setWordWrap(True)
@@ -404,7 +423,7 @@ class MainWindow(QMainWindow):
         hc = QVBoxLayout(history_card)
         hc.addWidget(QLabel("지난 전송"))
         self.history_list = QTreeWidget()
-        self.history_list.setHeaderLabels(["시각", "보낸 것", "결과"])
+        self.history_list.setHeaderLabels(["보낸 때", "스냅샷", "결과"])
         self.history_list.setRootIsDecorated(False)
         self.history_list.setAlternatingRowColors(True)
         hc.addWidget(self.history_list, 1)
@@ -416,18 +435,19 @@ class MainWindow(QMainWindow):
 
     def _refresh_sender_info(self) -> None:
         s = self.cfg.sender
-        self.sender_folder_label.setText(s.source_dir or "(설정되지 않음)")
-        self.sender_folder_summary.setText(f"세는 중... · {_every(s.interval_minutes)}")
+        self.sender_folder_label.setText(s.source_dir or "(아직 정하지 않았어요)")
+        self.sender_folder_summary.setText(f"세는 중이에요... · {_every(s.interval_minutes)}")
         self._folder_summary.start(s.source_dir, _every(s.interval_minutes))
 
+        # Device names only: how they are reached (taildrop / sftp / http)
+        # belongs to the advanced settings, not the home screen.
         targets = list(s.taildrop_targets) if s.taildrop_targets else ([s.host] if s.host else [])
-        self.sender_targets_title.setText(f"받는 쪽 {len(targets)}곳" if targets else "받는 쪽")
-        self.sender_targets_label.setText(
-            ("\n".join(targets) if targets else "(대상 없음)") + f"\n전송 방식: {s.transport}")
+        self.sender_targets_title.setText(f"받는 컴퓨터 {len(targets)}대" if targets else "받는 컴퓨터")
+        self.sender_targets_label.setText("\n".join(targets) if targets else "(아직 없어요)")
 
         work = Path(s.work_dir) if s.work_dir else None
         used = sum(p.stat().st_size for p in work.rglob("*.7z")) if work and work.is_dir() else 0
-        keep = f"최근 {s.keep_local}개만 남깁니다" if s.keep_local > 0 else "보낸 압축은 바로 지웁니다"
+        keep = f"최근 {s.keep_local}개만 남겨요" if s.keep_local > 0 else "보낸 압축은 바로 지워요"
         self.sender_space_label.setText(f"쓴 공간 {_human_size(used)} · {keep}")
         self._refresh_history()
 
@@ -437,30 +457,40 @@ class MainWindow(QMainWindow):
         for r in rows:
             if r.get("ok"):
                 result = f"✓ {_human_size(r.get('size') or 0)} · {_duration(r.get('elapsed') or 0)}"
-                if r.get("transport"):
-                    result += f" · {r['transport']}"
             else:
-                result = f"✗ {r.get('detail') or '실패'}"
-            QTreeWidgetItem(self.history_list, [_when(r.get("at", 0)), r.get("archive") or "-", result])
+                result = "✗ 닿지 못했어요"
+            item = QTreeWidgetItem(self.history_list, [
+                _when(r.get("at", 0)), _snapshot_label(r.get("archive") or ""), result])
+            if not r.get("ok") and r.get("detail"):
+                item.setToolTip(2, r["detail"])
         for column in range(2):
             self.history_list.resizeColumnToContents(column)
         self._refresh_verdict(rows[0] if rows else None)
 
     def _refresh_verdict(self, last: dict | None) -> None:
+        # The sender cannot see the far side unpack, so its best news is
+        # "보냈어요" in plain text. The blue "잘 되고 있어요" is reserved for
+        # the receiver, which has actually unpacked what arrived (design
+        # guide, principle ③).
         if last is None:
-            self.verdict.setText("아직 보낸 적이 없습니다")
-            self.verdict.setStyleSheet(f"font-size: 17px; font-weight: 700; color: {c('muted')};")
+            self._set_verdict("아직 보낸 적이 없어요", "muted")
             self.status_detail.setText("")
+            self.status_detail.setToolTip("")
         elif last.get("ok"):
-            self.verdict.setText("✓ 잘 되고 있습니다")
-            self.verdict.setStyleSheet(f"font-size: 17px; font-weight: 700; color: {c('primary')};")
+            self._set_verdict("✓ 보냈어요", None)
             self.status_detail.setText(
                 f"마지막 전송 {_when(last['at'])} · {_human_size(last.get('size') or 0)} · "
-                f"{_duration(last.get('elapsed') or 0)} 걸림")
+                f"{_duration(last.get('elapsed') or 0)} 걸렸어요")
+            self.status_detail.setToolTip("")
         else:
-            self.verdict.setText("! 마지막 전송이 실패했습니다")
-            self.verdict.setStyleSheet(f"font-size: 17px; font-weight: 700; color: {c('danger')};")
-            self.status_detail.setText(f"{_when(last['at'])} · {last.get('detail') or '원인 미상'}")
+            self._set_verdict("! 이번 전송은 닿지 못했어요", "danger")
+            self.status_detail.setText(f"{_when(last['at'])} · 압축은 만들어 뒀고, 다음 전송 때 같이 보낼게요.")
+            self.status_detail.setToolTip(last.get("detail") or "")
+
+    def _set_verdict(self, text: str, role: str | None) -> None:
+        self.verdict.setText(text)
+        color = f" color: {c(role)};" if role else ""
+        self.verdict.setStyleSheet(f"font-size: 17px; font-weight: 700;{color}")
 
     def _build_receiver_body(self) -> None:
         self.silence_banner = QFrame()
@@ -478,7 +508,7 @@ class MainWindow(QMainWindow):
         text.addWidget(self.silence_title)
         text.addWidget(self.silence_detail)
         banner.addLayout(text, 1)
-        self.silence_ack = QPushButton("확인했음")
+        self.silence_ack = QPushButton("확인했어요")
         self.silence_ack.clicked.connect(self._ack_silence)
         banner.addWidget(self.silence_ack, 0, Qt.AlignTop)
         self.silence_banner.setVisible(False)
@@ -489,10 +519,20 @@ class MainWindow(QMainWindow):
         self._acked_silence: set[tuple[str, float]] = set()
         self._shown_silence: tuple[str, float] | None = None
 
+        latest_row = QHBoxLayout()
+        self.latest_copy = QLabel("")
+        self.latest_copy.setWordWrap(True)
+        latest_row.addWidget(self.latest_copy, 1)
+        self.latest_open = QPushButton("열어 보기")
+        self.latest_open.clicked.connect(self._open_latest)
+        latest_row.addWidget(self.latest_open)
+        self.body_container.addLayout(latest_row)
+        self._latest_folder: Path | None = None
+
         stats_row = QHBoxLayout()
         self.stat_stored = self._stat_tile("보관 중")
         self.stat_space = self._stat_tile("쓴 공간")
-        self.stat_senders = self._stat_tile("보내는 쪽")
+        self.stat_senders = self._stat_tile("보내는 컴퓨터")
         for tile in (self.stat_stored, self.stat_space, self.stat_senders):
             stats_row.addWidget(tile["card"], 1)
         self.body_container.addLayout(stats_row)
@@ -507,7 +547,7 @@ class MainWindow(QMainWindow):
         head.addWidget(open_btn)
         rc.addLayout(head)
         self.received_list = QTreeWidget()
-        self.received_list.setHeaderLabels(["받은 시각", "보낸 쪽", "크기", "폴더"])
+        self.received_list.setHeaderLabels(["받은 때", "보낸 컴퓨터", "크기", "스냅샷"])
         self.received_list.setRootIsDecorated(False)
         self.received_list.setAlternatingRowColors(True)
         rc.addWidget(self.received_list, 1)
@@ -524,6 +564,13 @@ class MainWindow(QMainWindow):
         if self._shown_silence:
             self._acked_silence.add(self._shown_silence)
         self.silence_banner.setVisible(False)
+
+    def _open_latest(self) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        if self._latest_folder is not None:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._latest_folder)))
 
     def _open_unpack_dir(self) -> None:
         from PySide6.QtCore import QUrl
@@ -575,29 +622,51 @@ class MainWindow(QMainWindow):
         known_path = config_dir() / pairing.KNOWN_SENDERS_FILENAME
         registry = pairing.load_known_senders(known_path)
         overdue = pairing.overdue_senders(registry)
-        self.stat_senders["value"].setText(f"{len(registry)}곳")
-        self.stat_senders["detail"].setText(f"{len(overdue)}곳 응답 없음" if overdue else "")
+        self.stat_senders["value"].setText(f"{len(registry)}대")
+        self.stat_senders["detail"].setText(f"{len(overdue)}대가 오지 않아요" if overdue else "")
         unacked = [o for o in overdue
                    if (o["device_id"], o.get("last_seen")) not in self._acked_silence]
         if unacked:
             worst = unacked[0]
             days = int(worst["elapsed_seconds"] // 86400)
             self.silence_title.setText(
-                f"{worst.get('device_name', worst['device_id'])} 에서 {max(days, 1)}일째 오지 않습니다")
+                f"{worst.get('device_name', worst['device_id'])}에서 {max(days, 1)}일째 오지 않아요")
             self.silence_detail.setText(
-                f"{_every(worst.get('interval_minutes'))} 오기로 되어 있습니다. "
-                "그 컴퓨터가 꺼져 있거나 tailnet 에서 빠졌을 수 있습니다.")
+                f"{_every(worst.get('interval_minutes'))} 오기로 돼 있어요. "
+                "그 컴퓨터가 꺼져 있거나 연결이 끊겼을 수 있어요.")
             self._shown_silence = (worst["device_id"], worst.get("last_seen"))
             self.silence_banner.setVisible(True)
         else:
             self._shown_silence = None
             self.silence_banner.setVisible(False)
 
+        # The verdict stays on a silence even after 확인했어요: the banner can
+        # be put away, the state cannot (design guide, principle ④).
+        if overdue:
+            self._set_verdict(f"! 오지 않는 컴퓨터가 {len(overdue)}대 있어요", "warn")
+        elif folders:
+            self._set_verdict("✓ 잘 되고 있어요", "primary")
+        else:
+            self._set_verdict("아직 받은 게 없어요", "muted")
+
+        self._latest_folder = folders[0] if folders else None
+        self.latest_open.setEnabled(bool(folders))
+        if folders:
+            newest = folders[0]
+            inner = [p for p in newest.iterdir() if p.is_dir()]
+            root = inner[0] if len(inner) == 1 else newest
+            count = sum(1 for p in root.iterdir() if p.is_dir())
+            self.latest_copy.setText(
+                f"마지막으로 확인된 복사본: {_when(newest.stat().st_mtime)} · "
+                f"{_sender_of(newest, registry)}" + (f" · {count}개 폴더" if count else ""))
+        else:
+            self.latest_copy.setText("아직 받아서 푼 복사본이 없어요.")
+
         self.received_list.clear()
         for folder in folders[:50]:
-            when = time.strftime("%m-%d %H:%M", time.localtime(folder.stat().st_mtime))
             QTreeWidgetItem(self.received_list, [
-                when, _sender_of(folder, registry), _human_size(sizes[folder]), folder.name])
+                _when(folder.stat().st_mtime), _sender_of(folder, registry),
+                _human_size(sizes[folder]), _snapshot_label(folder.name)])
         for column in range(3):
             self.received_list.resizeColumnToContents(column)
 
@@ -618,7 +687,7 @@ class MainWindow(QMainWindow):
         else:
             problems = self.cfg.problems()
             if problems:
-                QMessageBox.warning(self, "설정이 필요합니다", "\n".join(problems))
+                QMessageBox.warning(self, "설정이 필요해요", "\n".join(problems))
                 self._open_settings()
                 return
             self.engine.start()
@@ -627,7 +696,7 @@ class MainWindow(QMainWindow):
     def _toggle_pause(self) -> None:
         if not self.engine.running:
             return
-        if self.status.text() in ("일시중지",):
+        if self._engine_status == "일시중지":
             self.engine.resume()
         else:
             self.engine.pause()
@@ -635,7 +704,7 @@ class MainWindow(QMainWindow):
     def _run_now(self) -> None:
         problems = self.cfg.problems()
         if problems:
-            QMessageBox.warning(self, "설정이 필요합니다", "\n".join(problems))
+            QMessageBox.warning(self, "설정이 필요해요", "\n".join(problems))
             return
         self.engine.run_now()
 
@@ -654,14 +723,15 @@ class MainWindow(QMainWindow):
             else:
                 self._refresh_receiver_stats()
             self._refresh_role_ui()
-            self.log.line("설정을 저장했습니다.")
+            self.log.line("설정을 저장했어요.")
             if was_running:
                 self._toggle_start()
 
     # ------------------------------------------------------------- engine
 
     def _on_status(self, text: str) -> None:
-        self.status.setText(text)
+        self._engine_status = text
+        self.status.setText(wording.status(text))
         self._refresh_buttons()
 
     def _on_progress(self, phase: str, pct: int) -> None:
@@ -675,7 +745,8 @@ class MainWindow(QMainWindow):
         if result.ok:
             self.phase.setText("")
         else:
-            self.phase.setText(f"실패: {result.detail}")
+            self.phase.setText("이번 전송은 닿지 못했어요. 다음 전송 때 같이 보낼게요.")
+            self.phase.setToolTip(result.detail)
         self.progress.setValue(0)
         if self.cfg.role == ROLE_SENDER:
             self._refresh_sender_info()
@@ -686,26 +757,28 @@ class MainWindow(QMainWindow):
 
     def _refresh_role_ui(self) -> None:
         is_sender = self.cfg.role == ROLE_SENDER
-        self.role_badge.setText("보내는 쪽" if is_sender else "받는 쪽")
-        self.status.setText("대기")
+        self.role_badge.setText("보내는 컴퓨터" if is_sender else "받는 컴퓨터")
+        self._engine_status = "대기"
+        self.status.setText(wording.status("대기"))
         self.status_detail.setText("")
         self.next_run.setText("")
         self.phase.setText("")
         self.btn_run.setText("지금 보내기" if is_sender else "지금 확인")
-        self.verdict.setVisible(is_sender)
         if is_sender:
             self._refresh_history()
+        else:
+            self._refresh_receiver_stats()
         self._refresh_buttons()
 
     def _refresh_buttons(self) -> None:
         running = self.engine.running
-        self.btn_start.setText("중지" if running else "시작")
+        self.btn_start.setText("끄기" if running else "켜기")
         self.btn_pause.setEnabled(running and self.cfg.role == ROLE_SENDER)
-        self.btn_pause.setText("다시 시작" if self.status.text() == "일시중지" else "잠시 멈춤")
+        self.btn_pause.setText("다시 시작" if self._engine_status == "일시중지" else "잠시 멈춤")
         if self.cfg.role == ROLE_RECEIVER:
             # engine.py polls the incoming folder every 5000 ms while running.
-            polling = running and self.status.text() != "일시중지"
-            self.poll_note.setText("5초마다 확인 중" if polling else "확인 멈춤")
+            polling = running and self._engine_status != "일시중지"
+            self.poll_note.setText("5초마다 확인하고 있어요" if polling else "확인을 멈췄어요")
         else:
             self.poll_note.setText("")
 
@@ -718,7 +791,7 @@ class MainWindow(QMainWindow):
             return
         event.ignore()
         self.hide()
-        self.log.line("트레이로 최소화되었습니다. 백업은 계속 실행됩니다.")
+        self.log.line("창을 닫았어요. 백업은 트레이에서 계속 돌아요.")
 
     def _quit(self) -> None:
         self._really_quit = True
