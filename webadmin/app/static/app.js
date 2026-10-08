@@ -258,7 +258,9 @@ function renderActions() {
   const enabled = target && target.status && target.status.task && target.status.task.enabled;
   $('[data-action="toggle"]').textContent = enabled ? '일시 중지' : '재개';
   const has = Boolean(target);
-  document.querySelectorAll('[data-action]').forEach((b) => { b.disabled = !has; });
+  // Runs on every refresh, so it must keep applyLevel()'s verdict rather
+  // than re-enabling what this viewer may not do.
+  document.querySelectorAll('[data-action]').forEach((b) => { b.disabled = !has || !atLeast('operator'); });
 }
 
 function actionTarget() {
