@@ -141,6 +141,19 @@ def test_settings_dialog(app: QApplication, root: Path) -> None:
     dlg.close()
 
 
+def _dispose_tray(tray) -> None:
+    # A Tray has no Qt parent and the engine's signal connections keep its
+    # Python wrapper alive, so without this the real notification-area icon
+    # outlives the test and is torn down during process exit - where it
+    # crashed with an access violation after every check had passed (4 of
+    # 10 runs before; 0 of 20 with the two tray tests removed; 0 of 50 once
+    # disposed here).
+    import shiboken6
+
+    tray.hide()
+    shiboken6.delete(tray)
+
+
 def test_tray_signal_wiring(app: QApplication, root: Path) -> None:
     section("Tray failure-notification wiring (Phase 1)")
     cfg, log, engine = _fresh(root, ROLE_SENDER)
@@ -152,6 +165,7 @@ def test_tray_signal_wiring(app: QApplication, root: Path) -> None:
 
     tray._on_run_result(RunResult(True))
     check("error flag clears on the next successful run", tray._error is False)
+    _dispose_tray(tray)
     win.close()
 
 
@@ -188,7 +202,7 @@ def test_tray_update_check_action(app: QApplication, root: Path) -> None:
         check("clicking it launches the exe with --once",
               popen.call_args[0][0] == [str(fake_um_exe), "--once"], popen.call_args)
 
-        tray.hide()
+        _dispose_tray(tray)
         win.close()
 
 
