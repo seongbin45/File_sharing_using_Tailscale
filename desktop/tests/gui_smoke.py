@@ -297,22 +297,50 @@ def test_tray_update_check_action(app: QApplication, root: Path) -> None:
 
 def test_wizard(app: QApplication, root: Path) -> None:
     section("SetupWizard construction and sender-path wiring (Phase 3)")
+    from app import wizard as wiz_module
+
     cfg = AppConfig()
     wiz = SetupWizard(cfg)
-    check("wizard has 4 pages (role, receiver, sender, test)", wiz.stack.count() == 4)
+    check("one question per page: role, ready, code | folder, how often, code, test",
+          wiz.stack.count() == 7)
 
     wiz.role_sender.setChecked(True)
     wiz._role_next()
-    check("choosing sender advances to the sender page", wiz.stack.currentIndex() == 2)
+    check("choosing sender starts at the folder page",
+          wiz.stack.currentIndex() == wiz_module.PAGE_FOLDER)
+
+    wiz.source_edit.setText(str(root / "no-such-folder"))
+    check("다음 stays off for a folder that does not exist", not wiz.folder_next.isEnabled())
+    folder = root / "wiz_src"
+    folder.mkdir(exist_ok=True)
+    wiz.source_edit.setText(str(folder))
+    check("...and turns on for one that does", wiz.folder_next.isEnabled())
+    wiz._folder_next()
+    check("then how often", wiz.stack.currentIndex() == wiz_module.PAGE_SCHEDULE)
+    check("하루에 한 번 is the default", wiz._schedule_minutes() == 1440)
+    wiz._schedule_next()
+    check("the code comes last, after the interval is known",
+          wiz.stack.currentIndex() == wiz_module.PAGE_PAIR and cfg.sender.interval_minutes == 1440)
 
     wiz.code_entry.setText("00000-0001")
     wiz._resolve_code()
     check("an unreachable code reports failure without crashing",
-          "실패" in wiz.pair_result.text(), wiz.pair_result.text())
-    check("sender_next stays disabled after a failed resolve",
-          not wiz.sender_next.isEnabled())
+          "연결하지 못했어요" in wiz.pair_result.text(), wiz.pair_result.text())
+    check("...and stays on the code page", wiz.stack.currentIndex() == wiz_module.PAGE_PAIR)
 
     wiz._cleanup()
+
+
+def test_wizard_ready_page(app: QApplication, root: Path) -> None:
+    section("SetupWizard receiver: the readiness page checks Tailscale first")
+    with patch("tsbackup.pairing.local_tailscale_ip", lambda: None):
+        wiz = SetupWizard(AppConfig())
+        wiz.role_receiver.setChecked(True)
+        wiz._role_next()
+        check("Tailscale off: says so and 다음 stays off",
+              not wiz.ready_next.isEnabled() and "Tailscale" in wiz.ready_status.text(),
+              wiz.ready_status.text())
+        wiz._cleanup()
 
 
 @contextmanager
@@ -340,6 +368,7 @@ def test_wizard_receiver_page(app: QApplication, root: Path) -> None:
         wiz = SetupWizard(cfg)
         wiz.role_receiver.setChecked(True)
         wiz._role_next()
+        wiz._ready_next()
         check("a code is shown on the receiver page", bool(wiz.code_label.text()))
         check("마침 starts disabled - pairing hasn't happened yet",
               not wiz.receiver_finish.isEnabled())
@@ -359,7 +388,7 @@ def test_wizard_receiver_page(app: QApplication, root: Path) -> None:
         check("마침 stays disabled when paired but not yet confirmed",
               not wiz.receiver_finish.isEnabled())
         check("status reflects waiting for the sender's test-transfer",
-              "기다리는" in wiz.pair_status.text(), wiz.pair_status.text())
+              "기다리고" in wiz.pair_status.text(), wiz.pair_status.text())
 
         wiz._listener._session.confirmed = True
         wiz._poll_paired()
@@ -383,6 +412,7 @@ def test_wizard_receiver_expiry_escape_hatch(app: QApplication, root: Path) -> N
         wiz.show()
         wiz.role_receiver.setChecked(True)
         wiz._role_next()
+        wiz._ready_next()
 
         check("escape hatch is hidden while a code is still fresh",
               not wiz.receiver_finish_anyway.isVisible())
@@ -424,6 +454,7 @@ def test_wizard_close_routes_through_reject(app: QApplication, root: Path) -> No
         wiz.show()
         wiz.role_receiver.setChecked(True)
         wiz._role_next()
+        wiz._ready_next()
         check("listener is bound while the wizard is open",
               wiz._listener is not None)
 
@@ -512,6 +543,7 @@ def main() -> int:
         test_tray_signal_wiring(app, root)
         test_tray_update_check_action(app, root)
         test_wizard(app, root)
+        test_wizard_ready_page(app, root)
         test_wizard_receiver_page(app, root)
         test_wizard_receiver_expiry_escape_hatch(app, root)
         test_wizard_close_routes_through_reject(app, root)
