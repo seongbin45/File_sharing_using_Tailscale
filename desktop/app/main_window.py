@@ -76,6 +76,14 @@ def _every(minutes) -> str:
     return f"{m}분마다"
 
 
+def _month_day(ts: float) -> str:
+    # Not strftime("%m월 %d일"): on Windows, strftime encodes its format in
+    # the locale's code page, so Korean text in it raises UnicodeEncodeError
+    # on any non-Korean Windows (CI's runner, for one).
+    lt = time.localtime(ts)
+    return f"{lt.tm_mon:02d}월 {lt.tm_mday:02d}일"
+
+
 def _when(ts: float) -> str:
     """"오늘 04:26" / "어제 04:26" / "10월 06일 04:26"."""
     day = time.strftime("%Y-%m-%d", time.localtime(ts))
@@ -84,7 +92,7 @@ def _when(ts: float) -> str:
     elif day == time.strftime("%Y-%m-%d", time.localtime(time.time() - 86400)):
         prefix = "어제"
     else:
-        prefix = time.strftime("%m월 %d일", time.localtime(ts))
+        prefix = _month_day(ts)
     return f"{prefix} {time.strftime('%H:%M', time.localtime(ts))}"
 
 
@@ -609,7 +617,7 @@ class MainWindow(QMainWindow):
         if folders:
             oldest = min(folders, key=lambda p: p.stat().st_mtime)
             self.stat_stored["detail"].setText(
-                f"가장 오래된 것 {time.strftime('%m월 %d일', time.localtime(oldest.stat().st_mtime))}")
+                f"가장 오래된 것 {_month_day(oldest.stat().st_mtime)}")
 
         sizes = {f: _dir_size(f) for f in folders}
         self.stat_space["value"].setText(_human_size(sum(sizes.values())))
