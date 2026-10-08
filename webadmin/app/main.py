@@ -23,8 +23,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import html
 import json
 import os
+import re
 import urllib.parse
 from pathlib import Path
 from typing import Any
@@ -125,7 +127,7 @@ async def require_session(request: Request, call_next):
         )
         if path.startswith("/api/"):
             return JSONResponse({"detail": detail}, status_code=403)
-        return HTMLResponse(_denied_html(who, level, detail), status_code=403)
+        return HTMLResponse(_denied_html(who, level, detail, _client(request)), status_code=403)
 
     return await call_next(request)
 
@@ -232,15 +234,68 @@ async def logout() -> Any:
     return response
 
 
-def _denied_html(who: dict[str, Any] | None, level: str, detail: str) -> str:
-    name = who["login"] if who else "(신원 미확인)"
-    return LOGIN_PAGE.replace("__SUB__", "접근 거부").replace(
-        "__ERROR__",
-        f'<p class="err">{detail}</p><p style="font-size:11px;color:#767676">{name}</p>',
-    ).replace(
-        '<input type="password" name="password" placeholder="비밀번호" autofocus autocomplete="current-password">',
-        "",
-    ).replace('<button type="submit">로그인</button>', "")
+DENIED_PAGE = """<!doctype html>
+<html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TS CONTROL — 권한 없음</title>
+<style>
+ body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+      background:#0c0c0c;color:#ccc;
+      font-family:"JetBrains Mono","D2Coding",Consolas,"Malgun Gothic",monospace}
+ main{width:min(560px,92vw);border:1px solid #1f1f1f}
+ header{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid #1f1f1f}
+ h1{margin:0;font-size:13px;letter-spacing:.16em;color:#fff}
+ .lvl{padding:2px 7px;border:1px solid #e74856;color:#e74856;font-size:10.5px}
+ .lead{margin:0;padding:18px 16px 4px;font-size:13px;line-height:1.7;color:#e6e6e6}
+ code{color:#61d6d6}
+ dl{display:grid;grid-template-columns:11ch 1fr;row-gap:7px;column-gap:10px;
+    margin:0;padding:14px 16px;font-size:12.5px}
+ dt{color:#767676}
+ dd{margin:0;word-break:break-all}
+ .foot{margin:0;padding:12px 16px 16px;border-top:1px solid #1f1f1f;
+       color:#a8adb4;font-size:12px;line-height:1.7}
+</style></head><body><main>
+<header><h1>TS CONTROL</h1><span class="lvl">__LEVEL__</span></header>
+<p class="lead">__LEAD__</p>
+<dl>__ROWS__</dl>
+<p class="foot">__FOOT__</p>
+</main></body></html>"""
+
+_VIA = {
+    "whois": "tailscale whois (위조 불가)",
+    "serve-header": "tailscale serve 헤더 (루프백 바인딩에서만 신뢰)",
+}
+
+
+def _denied_html(who: dict[str, Any] | None, level: str, detail: str, client: str) -> str:
+    """Design 4a's 권한 없음 screen: who the tailnet says you are, from where,
+    and what has to change. Every value is escaped - the client address
+    comes from X-Forwarded-For, which anyone can set."""
+    esc = html.escape
+    if who is None:
+        lead = "tailnet 신원을 확인하지 못했습니다. tailnet 밖의 연결이거나 tailscaled 에 물어볼 수 없었습니다."
+    elif level == access.NONE:
+        lead = ("tailnet 신원은 확인되었으나 <code>access.json</code> 에 이 로그인에 허용된 단계가 "
+                "없습니다. 그래서 아무 동작도 허용되지 않습니다.")
+    else:
+        lead = esc(detail)
+    rows = [
+        ("신원", who["login"] if who else "(확인 못 함)"),
+        ("클라이언트", client),
+        ("확인 경로", _VIA.get(who.get("via", ""), who.get("via", "")) if who else "-"),
+    ]
+    foot = "관리자가 <code>access.json</code> 에 이 로그인의 단계를 추가해야 합니다. 이 화면은 요청 자체가 거부된 상태이며, "
+    foot += ("거부는 <code>audit.log</code> 에 남습니다." if audit.status()["enabled"]
+             else "감사 로그가 꺼져 있어 이 거부는 <code>audit.log</code> 에 남지 않았습니다.")
+    parts = {
+        "__LEVEL__": esc(access.LABEL.get(level, level)),
+        "__LEAD__": lead,
+        "__ROWS__": "".join(f"<dt>{esc(k)}</dt><dd>{esc(str(v))}</dd>" for k, v in rows),
+        "__FOOT__": foot,
+    }
+    # One pass, so a value that happens to contain a placeholder is not
+    # itself substituted into.
+    return re.sub("__(LEVEL|LEAD|ROWS|FOOT)__", lambda m: parts[m.group(0)], DENIED_PAGE)
 
 
 @app.get("/api/audit")

@@ -141,6 +141,17 @@ def test_http_by_role() -> None:
         got = c.get("/api/audit").status_code
         check(f"{login:24} audit  -> {expect}", got == expect, got)
 
+    section("the no-permission page says who, from where, and what to do")
+    CURRENT["login"] = STRANGER
+    r = c.get("/", headers={"X-Forwarded-For": "<script>x</script>"})
+    page = r.text
+    check("an unlisted login gets the 403 page", r.status_code == 403, r.status_code)
+    check("...naming the login, the check path and access.json",
+          STRANGER in page and "whois" in page and "access.json" in page, page[:300])
+    check("...saying the denial is in audit.log", "audit.log" in page)
+    check("...with the client address escaped, not as markup",
+          "&lt;script&gt;" in page and "<script>x" not in page)
+
 
 def test_terminal_by_role() -> None:
     section("terminal by role  (the line that matters)")
