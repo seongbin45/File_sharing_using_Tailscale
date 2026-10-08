@@ -59,6 +59,12 @@ class SenderConfig:
     # hours, so testing does not mean waiting an hour; the UI presents hours.
     interval_minutes: int = 720
 
+    # The clock time the schedule is anchored to ("HH:MM", local). A daily
+    # run happens at this time, a weekly one on Sunday at this time, a
+    # 6-hourly one at this time and every 6 hours from it - see
+    # tsbackup/schedule.py. 새벽 4시 is the design's default.
+    at_time: str = "04:00"
+
     # Primary transport, then fallbacks tried in order - the same idea as the
     # batch version's TARGETS list, generalised across transports.
     transport: str = "taildrop"

@@ -528,6 +528,12 @@ class PairingListener:
         match = self._confirm_test_file(
             str(body.get("test_name", "")), str(body.get("expected_hash", ""))
         )
+        # The sender picks how often it sends after entering the code, so
+        # the interval it sent with /pair may be a placeholder; the one sent
+        # here, after the choice, wins. Absent (older sender) keeps /pair's.
+        interval = body.get("interval_minutes")
+        if isinstance(interval, int) and interval > 0:
+            session.pending_interval_minutes = interval
         if match:
             session.confirmed = True
             record_heartbeat(
@@ -592,18 +598,21 @@ def resolve_and_pair(
 
 def confirm_test_transfer(
     code: str, confirm_token: str, test_name: str, expected_hash: str,
-    timeout: float = 10.0,
+    timeout: float = 10.0, interval_minutes: int | None = None,
 ) -> bool:
     """Sender side, after the test archive has actually been sent: ask the
     receiver whether it arrived and unpacked correctly. Without this round
     trip the wizard's test-transfer checklist can't tell "수신 → 해제"
     apart from wishful thinking - the sender alone cannot observe that."""
     ip, _secret = unpack_code(code)
-    response = _post(ip, "/confirm", {
+    body = {
         "confirm_token": confirm_token,
         "test_name": test_name,
         "expected_hash": expected_hash,
-    }, timeout)
+    }
+    if interval_minutes:
+        body["interval_minutes"] = int(interval_minutes)
+    response = _post(ip, "/confirm", body, timeout)
     return bool(response.get("match"))
 
 
@@ -685,7 +694,8 @@ def run_test_transfer(
 
         step("수신·해제 확인", "running")
         try:
-            matched = confirm_test_transfer(code, confirm_token, probe_name, digest)
+            matched = confirm_test_transfer(code, confirm_token, probe_name, digest,
+                                            interval_minutes=getattr(sender_cfg, "interval_minutes", None))
         except PairingError as exc:
             step("수신·해제 확인", "fail")
             return False, str(exc)

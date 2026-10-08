@@ -45,6 +45,9 @@ class Engine(QObject):
     line = Signal(str)
     run_finished = Signal(object)
     next_run = Signal(str)             # human text for the next scheduled run
+    # The next scheduled run as a Unix timestamp (0 = none), so screens can
+    # word it their own way ("오늘 새벽 4시").
+    next_due = Signal(float)
     # Fires exactly once per failure incident, only after retries are
     # exhausted - never on every failed attempt. The tray's notification and
     # error icon hang off this, not off run_finished, so a run that fails
@@ -61,8 +64,12 @@ class Engine(QObject):
         self._worker: _SenderWorker | None = None
         self._retry_count = 0
 
+        # A due time checked every 30 seconds rather than one long single
+        # shot: a long QTimer does not survive sleep reliably, and a slot
+        # passed while asleep must still fire on wake (tsbackup/schedule.py).
+        self._due: float | None = None
         self._timer = QTimer(self)
-        self._timer.setSingleShot(True)
+        self._timer.setInterval(30_000)
         self._timer.timeout.connect(self._on_timer)
 
         self._receiver = Receiver(cfg, self._emit_line)
@@ -85,13 +92,22 @@ class Engine(QObject):
             self._start_receiver()
         else:
             self.status.emit("실행 중")
-            # Fire the first run immediately, then fall into the interval.
-            self._run_now()
+            # Catch up once if a slot passed while the app was not running;
+            # otherwise wait for the next clock slot.
+            from datetime import datetime
+
+            from . import schedule
+
+            s = self.cfg.sender
+            if schedule.due_now(datetime.now(), self._last_run(), s.interval_minutes, s.at_time):
+                self._run_now()
+            else:
+                self._schedule_next()
 
     def stop(self) -> None:
         self._running = False
         self._retry_count = 0
-        self._timer.stop()
+        self._disarm()
         self._recv_timer.stop()
         self._receiver.stop_http()
         if self._worker:
@@ -103,7 +119,7 @@ class Engine(QObject):
         if not self._running:
             return
         self._paused = True
-        self._timer.stop()
+        self._disarm()
         self.status.emit("일시중지")
         self.next_run.emit("일시중지됨")
 
@@ -128,7 +144,7 @@ class Engine(QObject):
         if self._worker is not None:
             self.log.line("이미 실행 중입니다.")
             return
-        self._timer.stop()
+        self._disarm()
         self._retry_count = 0
         self._run_now()
 
@@ -195,26 +211,52 @@ class Engine(QObject):
             self._schedule_next()
 
     def _schedule_next(self) -> None:
-        import time
+        from datetime import datetime
 
-        minutes = max(1, int(self.cfg.sender.interval_minutes))
-        self._timer.start(minutes * 60 * 1000)
-        due = time.time() + minutes * 60
-        self.next_run.emit(time.strftime("%Y-%m-%d %H:%M", time.localtime(due)))
+        from . import schedule
+
+        s = self.cfg.sender
+        self._arm(schedule.next_slot(datetime.now(), s.interval_minutes, s.at_time).timestamp())
 
     def _schedule_retry(self) -> None:
         import time
 
-        self._timer.start(RETRY_INTERVAL_MINUTES * 60 * 1000)
-        due = time.time() + RETRY_INTERVAL_MINUTES * 60
-        self.next_run.emit(
-            f"{time.strftime('%Y-%m-%d %H:%M', time.localtime(due))} "
-            f"(재시도 {self._retry_count}/{engine_core.MAX_RETRIES})"
-        )
+        self._arm(time.time() + RETRY_INTERVAL_MINUTES * 60,
+                  f" (재시도 {self._retry_count}/{engine_core.MAX_RETRIES})")
+
+    def _arm(self, due: float, suffix: str = "") -> None:
+        import time
+
+        self._due = due
+        self._timer.start()
+        self.next_run.emit(time.strftime("%Y-%m-%d %H:%M", time.localtime(due)) + suffix)
+        self.next_due.emit(due)
+
+    def _disarm(self) -> None:
+        self._due = None
+        self._timer.stop()
+        self.next_due.emit(0.0)
+
+    @property
+    def due(self) -> float | None:
+        return self._due
 
     def _on_timer(self) -> None:
-        if self._running and not self._paused:
+        import time
+
+        if self._running and not self._paused and self._due is not None and time.time() >= self._due:
+            self._disarm()
             self._run_now()
+
+    def _last_run(self):
+        """When the sender last ran, from the run history (tsbackup/history.py)."""
+        from datetime import datetime
+
+        from . import history
+        from .config import config_dir
+
+        rows = history.load(config_dir() / history.FILENAME, 1)
+        return datetime.fromtimestamp(rows[0]["at"]) if rows else None
 
     # ------------------------------------------------------------ receiver
 

@@ -662,6 +662,7 @@ def test_run_test_transfer():
 
             sender_cfg = AppConfig().sender
             sender_cfg.transport = "_selftest_copy_to_incoming"
+            sender_cfg.interval_minutes = 10080   # chosen after the code was entered
 
             steps = []
             ok, detail = pairing.run_test_transfer(
@@ -670,6 +671,10 @@ def test_run_test_transfer():
             )
             check("test-transfer succeeds end to end (compress+send+confirm)",
                   ok, detail)
+            check("the receiver registers the interval chosen after pairing, sent "
+                  "with /confirm, not the placeholder sent with /pair",
+                  pairing.load_known_senders(known).get("dev-x", {}).get("interval_minutes") == 10080,
+                  pairing.load_known_senders(known))
             check("every step reports ok, in order",
                   [s for s in steps if s[1] != "running"] ==
                   [("압축", "ok"), ("전송", "ok"), ("수신·해제 확인", "ok")], steps)
@@ -1164,6 +1169,33 @@ def test_history():
         check("a damaged line is skipped, not fatal", len(history.load(path, 2)) == 2)
 
 
+def test_schedule():
+    section("schedule: clock-time slots and catch-up (design: 새벽 4시)")
+    from datetime import datetime as dt
+
+    from tsbackup import schedule as sch
+
+    wed_10 = dt(2026, 10, 7, 10, 0)            # a Wednesday
+    check("daily: next is tomorrow 04:00 after 4am has passed",
+          sch.next_slot(wed_10, 1440, "04:00") == dt(2026, 10, 8, 4, 0))
+    check("daily: before 4am the next is today 04:00",
+          sch.next_slot(dt(2026, 10, 7, 3, 0), 1440, "04:00") == dt(2026, 10, 7, 4, 0))
+    check("weekly: the coming Sunday 04:00",
+          sch.next_slot(wed_10, 10080, "04:00") == dt(2026, 10, 11, 4, 0))
+    check("6-hourly from 04:00: 04, 10, 16, 22 - at 10:00 the next is 16:00",
+          sch.next_slot(wed_10, 360, "04:00") == dt(2026, 10, 7, 16, 0))
+    check("6-hourly at 23:00: the next is tomorrow 04:00",
+          sch.next_slot(dt(2026, 10, 7, 23, 0), 360, "04:00") == dt(2026, 10, 8, 4, 0))
+    check("a run before today's 04:00 slot, opened at 10:00: catch up once",
+          sch.due_now(wed_10, dt(2026, 10, 6, 4, 2), 1440, "04:00"))
+    check("a run after the last slot: nothing to catch up",
+          not sch.due_now(wed_10, dt(2026, 10, 7, 4, 1), 1440, "04:00"))
+    check("never run: wait for the first slot, do not run on start",
+          not sch.due_now(wed_10, None, 1440, "04:00"))
+    check("a bad time string falls back to 04:00",
+          sch.next_slot(wed_10, 1440, "25:99") == dt(2026, 10, 8, 4, 0))
+
+
 def test_transport_registry():
     section("transport registry")
     from tsbackup import transports
@@ -1196,6 +1228,7 @@ if __name__ == "__main__":
     test_http_resume()
     test_sftp_resume()
     test_history()
+    test_schedule()
     test_transport_registry()
 
     print()
