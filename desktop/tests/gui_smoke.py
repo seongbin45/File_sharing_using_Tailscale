@@ -35,6 +35,14 @@ if hasattr(sys.stderr, "reconfigure"):
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+# Every window here can save the config (the wizard's 마침, settings that save
+# as they change) and the homes read history/known senders from config_dir().
+# Point both at a throwaway folder before tsbackup.config computes its paths
+# at import - otherwise a test run overwrites the developer's real config.
+_SANDBOX = tempfile.mkdtemp(prefix="tsbackup_gui_smoke_")
+os.environ["LOCALAPPDATA"] = _SANDBOX
+os.environ["TSBACKUP_CONFIG"] = str(Path(_SANDBOX) / "TsBackup" / "config.json")
+
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox  # noqa: E402
 
 from app.main_window import MainWindow  # noqa: E402
