@@ -379,7 +379,21 @@ def test_wizard_test_page(app: QApplication, root: Path) -> None:
     from app import wizard as wiz_module
 
     wiz = SetupWizard(AppConfig())
+    wiz.show()
     wiz._go(wiz_module.PAGE_TEST)
+    release = __import__("threading").Event()
+
+    def _slow_test(*_a, **_k):
+        release.wait(5)
+        return True, ""
+
+    with patch("tsbackup.pairing.run_test_transfer", _slow_test):
+        wiz._run_test_transfer()
+        app.processEvents()
+        check("이전 is hidden while the test runs (design: wzShowBack)", not wiz.test_back.isVisible())
+        release.set()
+        _wait(app, lambda: wiz.test_finish.isEnabled())
+    check("...and comes back once it has finished", wiz.test_back.isVisible())
     wiz._on_test_finished(True, "")
     check("success says 잘 건너갔어요 and when the next send is",
           wiz.test_page.title_label.text() == "잘 건너갔어요"

@@ -397,7 +397,10 @@ class SetupWizard(QDialog):
         self.test_page = w
         self.steps = StepList([name for _key, name in STEPS])
         body.addWidget(self.steps)
-        row.addWidget(self._back(PAGE_SCHEDULE))
+        # Hidden while the test runs (the design's wzShowBack): leaving the
+        # page would strand the worker thread mid-transfer.
+        self.test_back = self._back(PAGE_SCHEDULE)
+        row.addWidget(self.test_back)
         row.addStretch(1)
         self.test_finish = button("확인하는 중", "primary", large=True)
         self.test_finish.setEnabled(False)
@@ -414,6 +417,7 @@ class SetupWizard(QDialog):
         self.test_page.sub_label.setText("작은 파일 하나로 처음부터 끝까지 한 번 해 볼게요.")
         self.test_finish.setText("확인하는 중")
         self.test_finish.setEnabled(False)
+        self.test_back.hide()
 
         confirm_token = self._pair_payload.get("confirm_token", "")
         thread = QThread(self)
@@ -432,7 +436,7 @@ class SetupWizard(QDialog):
         i = keys.index(key)
         if status == "running":
             self._step_started[key] = time.monotonic()
-            self.steps.set_step(i, "run", "하는 중")
+            self.steps.set_step(i, "run", "보내는 중" if key == "전송" else "하는 중")
             return
         took = time.monotonic() - self._step_started.get(key, time.monotonic())
         if status == "ok":
@@ -469,6 +473,7 @@ class SetupWizard(QDialog):
                 f"{detail} 받는 컴퓨터가 켜져 있는지 확인하고 다시 해 주세요.")
             self.test_finish.setText("다시 해 보기")
         self.test_finish.setEnabled(True)
+        self.test_back.show()
 
     def _test_primary(self) -> None:
         if self._test_ok:
