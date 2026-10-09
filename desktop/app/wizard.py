@@ -63,15 +63,16 @@ class _TestTransferWorker(QObject):
     step = Signal(str, str)        # label, "running" | "ok" | "fail"
     finished = Signal(bool, str)   # ok, detail
 
-    def __init__(self, cfg, code: str, confirm_token: str) -> None:
+    def __init__(self, cfg, code: str, confirm_token: str, log=None) -> None:
         super().__init__()
+        self._log = log or (lambda _line: None)
         self._cfg = cfg
         self._code = code
         self._confirm_token = confirm_token
 
     def run(self) -> None:
         ok, detail = pairing.run_test_transfer(
-            self._cfg.sender, self._code, self._confirm_token, step=self.step.emit)
+            self._cfg.sender, self._code, self._confirm_token, step=self.step.emit, log=self._log)
         self.finished.emit(ok, detail)
 
 
@@ -261,6 +262,10 @@ class SetupWizard(QDialog):
                 transport_preference="taildrop",
             )
         except pairing.PairingError as exc:
+            # The screen gets the plain sentence; the cause underneath (a
+            # socket error, an HTTP status) goes to the log.
+            if self._log and exc.__cause__ is not None:
+                self._log(f"짝 코드 연결 실패: {exc} ({exc.__cause__})")
             self._show_pair_error(f"연결하지 못했어요. {exc}")
             return
 
@@ -421,7 +426,7 @@ class SetupWizard(QDialog):
 
         confirm_token = self._pair_payload.get("confirm_token", "")
         thread = QThread(self)
-        worker = _TestTransferWorker(self.cfg, self._pair_code, confirm_token)
+        worker = _TestTransferWorker(self.cfg, self._pair_code, confirm_token, log=self._log)
         worker.moveToThread(thread)
         worker.step.connect(self._on_test_step)
         worker.finished.connect(self._on_test_finished)

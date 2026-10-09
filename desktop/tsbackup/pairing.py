@@ -102,17 +102,17 @@ class PairingError(RuntimeError):
 def _ip_to_int(ip: str) -> int:
     parts = ip.split(".")
     if len(parts) != 4:
-        raise PairingError(f"Tailscale 주소 형식이 아닙니다: {ip}")
+        raise PairingError(f"Tailscale 주소가 아니에요: {ip}")
     try:
         octets = [int(p) for p in parts]
     except ValueError as exc:
-        raise PairingError(f"Tailscale 주소 형식이 아닙니다: {ip}") from exc
+        raise PairingError(f"Tailscale 주소가 아니에요: {ip}") from exc
     if not all(0 <= o <= 255 for o in octets):
-        raise PairingError(f"Tailscale 주소 형식이 아닙니다: {ip}")
+        raise PairingError(f"Tailscale 주소가 아니에요: {ip}")
     o1, o2, o3, o4 = octets
     if o1 != 100 or not (64 <= o2 <= 127):
         raise PairingError(
-            f"Tailscale CGNAT 범위(100.64.0.0/10)의 주소가 아닙니다: {ip}"
+            f"Tailscale 주소(100.64.0.0/10)가 아니에요: {ip}"
         )
     return ((o2 - 64) << 16) | (o3 << 8) | o4
 
@@ -136,7 +136,7 @@ def _b32_decode(text: str) -> int:
         try:
             idx = _ALPHABET.index(ch)
         except ValueError as exc:
-            raise PairingError(f"코드에 올바르지 않은 글자가 있습니다: {ch}") from exc
+            raise PairingError(f"코드에 쓰지 않는 글자({ch})가 있어요. 받는 컴퓨터에 뜬 코드를 그대로 넣어 주세요.") from exc
         value = (value << 5) | idx
     return value
 
@@ -157,7 +157,7 @@ def unpack_code(code: str) -> tuple[str, int]:
     secret), with no server round trip needed to know where to connect."""
     raw = code.strip().upper().replace("-", "").replace(" ", "")
     if len(raw) != CODE_CHARS:
-        raise PairingError(f"코드는 {CODE_CHARS}자여야 합니다: 받은 값 {len(raw)}자")
+        raise PairingError(f"코드는 {CODE_CHARS}자리예요({len(raw)}자리를 넣었어요). 받는 컴퓨터에 뜬 코드를 그대로 넣어 주세요.")
     combined = _b32_decode(raw)
     secret = combined & ((1 << SECRET_BITS) - 1)
     ip_bits = combined >> SECRET_BITS
@@ -444,13 +444,13 @@ class PairingListener:
     def _handle_pair(self, body: dict) -> dict:
         session = self._session
         if session is None or session.expired():
-            raise PairingError("코드가 만료되었습니다")
+            raise PairingError("코드가 만료됐어요. 받는 컴퓨터에서 새 코드를 만들어 주세요.")
         now = time.time()
         if now - session.last_request_at < MIN_REQUEST_INTERVAL:
-            raise PairingError("너무 빠른 요청입니다 - 잠시 후 다시 시도하십시오")
+            raise PairingError("너무 빨리 다시 시도했어요. 잠시 뒤에 다시 해 주세요.")
         session.last_request_at = now
         if session.locked_out():
-            raise PairingError("틀린 시도가 너무 많아 이 코드는 폐기되었습니다 - 새 코드를 만드십시오")
+            raise PairingError("틀린 코드가 너무 많이 들어와서 이 코드는 폐기됐어요. 받는 컴퓨터에서 새 코드를 만들어 주세요.")
 
         if body.get("secret") != session.secret:
             session.wrong_attempts += 1
@@ -462,7 +462,7 @@ class PairingListener:
                       f"(요청 기기: {claimed})")
             if session.locked_out():
                 self._log("틀린 시도가 너무 많아 짝 코드를 폐기했습니다 - 새 코드가 필요합니다")
-            raise PairingError("코드가 일치하지 않습니다")
+            raise PairingError("코드가 맞지 않아요. 받는 컴퓨터에 뜬 코드를 다시 확인해 주세요.")
 
         # Validate the request body BEFORE consuming the code below - a
         # malformed request (missing device_name/device_id) must not burn
@@ -471,15 +471,15 @@ class PairingListener:
         device_name = _peer_text(body.get("device_name", ""))
         device_id = str(body.get("device_id", "")).strip()
         if not device_name or not device_id:
-            raise PairingError("보내는 쪽 정보가 없습니다 (device_name/device_id)")
+            raise PairingError("보내는 컴퓨터 정보가 빠져 있어요. 두 컴퓨터의 나루를 같은 버전으로 맞춰 주세요.")
         if not _valid_device_id(device_id):
-            raise PairingError("보내는 쪽 device_id 형식이 올바르지 않습니다")
+            raise PairingError("보내는 컴퓨터 정보가 올바르지 않아요. 두 컴퓨터의 나루를 같은 버전으로 맞춰 주세요.")
         # Unsupported until the receiver stores per-device token hashes with
         # expiry and revocation (docs/VERIFICATION.md, pairing audit). Refused
         # here, before the code is consumed, so the sender can retry with a
         # supported transport on the same code.
         if str(body.get("transport_preference", "taildrop")) == "http":
-            raise PairingError("http 짝 맺기는 현재 지원하지 않습니다 - taildrop 으로 짝을 맺으십시오")
+            raise PairingError("http 방식으로는 짝을 맺을 수 없어요(지원하지 않아요). 고급 설정에서 전송 방식을 taildrop으로 바꿔 주세요.")
 
         if session.paired:
             if session.paired_device_id == device_id:
@@ -488,7 +488,7 @@ class PairingListener:
                 # secret already proved possession of the code once; a
                 # different device_id still gets refused below.
                 return session.paired_response
-            raise PairingError("이미 사용된 코드입니다")
+            raise PairingError("이미 쓴 코드예요. 받는 컴퓨터에서 새 코드를 만들어 주세요.")
 
         session.paired = True
         session.paired_at = time.time()
@@ -519,12 +519,12 @@ class PairingListener:
     def _handle_confirm(self, body: dict) -> dict:
         session = self._session
         if session is None or not session.confirm_token:
-            raise PairingError("짝 절차가 아직 끝나지 않았습니다")
+            raise PairingError("짝 맺기가 아직 끝나지 않았어요. 처음부터 다시 해 주세요.")
         if session.expired():
-            raise PairingError("코드가 만료되었습니다")
+            raise PairingError("코드가 만료됐어요. 받는 컴퓨터에서 새 코드를 만들어 주세요.")
         if not hmac.compare_digest(str(body.get("confirm_token", "")).encode("utf-8"),
                                    session.confirm_token.encode("utf-8")):
-            raise PairingError("확인 토큰이 올바르지 않습니다")
+            raise PairingError("확인 정보가 맞지 않아요. 처음부터 다시 해 주세요.")
         match = self._confirm_test_file(
             str(body.get("test_name", "")), str(body.get("expected_hash", ""))
         )
@@ -644,6 +644,7 @@ def local_tailscale_ip() -> str | None:
 def run_test_transfer(
     sender_cfg, code: str, confirm_token: str,
     step=lambda label, status: None,
+    log=lambda line: None,
 ) -> tuple[bool, str]:
     """The wizard's test-transfer step, independent of Qt so it can be
     tested headlessly - app/wizard.py's _TestTransferWorker only wraps this
@@ -674,7 +675,8 @@ def run_test_transfer(
         result = archiver.create_archive(src_dir, work_dir, level=1)
         if not result.ok:
             step("압축", "fail")
-            return False, f"압축 실패: {result.error}"
+            log(f"시험 전송 - 압축 실패: {result.error}")
+            return False, "시험 파일을 만들지 못했어요."
         step("압축", "ok")
 
         step("전송", "running")
@@ -682,14 +684,16 @@ def run_test_transfer(
             transport = build_transport(sender_cfg.transport, sender_cfg, lambda _m: None)
         except ValueError as exc:
             step("전송", "fail")
-            return False, str(exc)
+            log(f"시험 전송 - 전송 방식 오류: {exc}")
+            return False, "시험 파일을 보낼 방법을 찾지 못했어요."
         try:
             tr = transport.send(result.path)
         finally:
             transport.close()
         if not tr.ok:
             step("전송", "fail")
-            return False, f"전송 실패: {tr.detail}"
+            log(f"시험 전송 - 전송 실패: {tr.detail}")
+            return False, "시험 파일이 건너가지 못했어요."
         step("전송", "ok")
 
         step("수신·해제 확인", "running")
@@ -701,7 +705,7 @@ def run_test_transfer(
             return False, str(exc)
         if not matched:
             step("수신·해제 확인", "fail")
-            return False, "받는 쪽에서 파일을 확인하지 못했습니다"
+            return False, "받는 컴퓨터가 시험 파일을 확인하지 못했어요."
         step("수신·해제 확인", "ok")
 
     return True, ""
@@ -728,4 +732,4 @@ def _post(ip: str, path: str, body: dict, timeout: float) -> dict:
         # even reach it" (blocked port, firewall prompt, wrong network),
         # not "reached it and it said no" - the wizard shows these
         # differently so a blocked port doesn't look like a typo'd code.
-        raise PairingError(f"연결할 수 없습니다: {exc.reason}") from exc
+        raise PairingError("받는 컴퓨터에 닿지 못했어요. 받는 컴퓨터에 코드가 떠 있는지 확인해 주세요.") from exc

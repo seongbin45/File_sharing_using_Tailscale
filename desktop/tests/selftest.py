@@ -370,7 +370,7 @@ def test_pairing():
             check("a device_id with control characters is refused", False, "it paired")
         except pairing.PairingError as exc:
             check("a device_id with control characters is refused",
-                  "device_id" in str(exc), str(exc))
+                  "올바르지 않아요" in str(exc), str(exc))
 
         section("pairing: http is refused, without consuming the code")
         listener.regenerate()
@@ -402,7 +402,7 @@ def test_pairing():
             check("a /pair missing device_name/device_id is refused", False, "it paired")
         except pairing.PairingError as exc:
             check("a /pair missing device_name/device_id is refused",
-                  "정보가 없습니다" in str(exc), str(exc))
+                  "빠져 있어요" in str(exc), str(exc))
         check("...and crucially does NOT consume the code - a real /pair "
               "with the same secret right after still succeeds, instead of "
               "the whole code being burned by one malformed request",
