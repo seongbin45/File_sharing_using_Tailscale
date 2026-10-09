@@ -124,6 +124,10 @@ class AppConfig:
     role: str = ROLE_SENDER
     minimize_to_tray: bool = True
     autostart_engine: bool = False   # begin the loop as soon as the app opens
+    # 설정 > 알림. Bad news only (design principle ④): a backup that did not
+    # cross over, and - on a receiver - a sender that has gone quiet.
+    notify_failures: bool = True
+    notify_silence: bool = True
     # Whether the first-run wizard has been completed. Defaults False only
     # for a genuinely new install (no config file at all yet) - load()
     # forces this True when loading a file saved before this field existed,
@@ -168,6 +172,8 @@ class AppConfig:
             cfg.role = ROLE_SENDER
         cfg.minimize_to_tray = bool(raw.get("minimize_to_tray", cfg.minimize_to_tray))
         cfg.autostart_engine = bool(raw.get("autostart_engine", cfg.autostart_engine))
+        cfg.notify_failures = bool(raw.get("notify_failures", cfg.notify_failures))
+        cfg.notify_silence = bool(raw.get("notify_silence", cfg.notify_silence))
         cfg.onboarded = bool(raw.get("onboarded", cfg.onboarded))
         cfg.device_id = raw.get("device_id", cfg.device_id)
         raw_sender = raw.get("sender", {})

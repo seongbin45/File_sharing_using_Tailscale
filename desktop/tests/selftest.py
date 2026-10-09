@@ -921,6 +921,13 @@ def test_receiver_unpack():
               any(p.name == ".env" for p in folders[0].rglob("*")) if folders else False)
         check("archive deleted after unpack", not any(incoming.glob("*.7z")))
 
+        section("an archive that will not unpack is remembered for the home screen")
+        bad = incoming / "PycharmProjects_2099_01_02_00_00.7z"
+        bad.write_bytes(b"not a 7z archive")
+        check("a broken archive is reported as not unpacked", receiver._unpack(bad) is False)
+        check("...and listed under failed, by name", bad.name in receiver.failed, receiver.failed)
+        bad.unlink()
+
         section("half-written .part is ignored")
         (incoming / "PycharmProjects_2099_01_01_00_00.7z.part").write_bytes(b"partial")
         check("no crash on .part", receiver.scan_once() == 0)

@@ -183,6 +183,9 @@ class Receiver:
         self.cfg = config
         self.log = log
         self._seen: set[str] = set()
+        # Archives that arrived but would not unpack, name -> when, for the
+        # home screen's "풀지 못했어요" rows. In memory: a restart retries them.
+        self.failed: dict[str, float] = {}
         self._sizes: dict[str, tuple[int, float]] = {}
         self._http = None
 
@@ -294,7 +297,9 @@ class Receiver:
                 archive.extractall(dest)
         except Exception as exc:  # noqa: BLE001
             self.log(f"압축 해제 실패: {path.name} ({exc})")
+            self.failed[path.name] = time.time()
             return False
+        self.failed.pop(path.name, None)
         self.log(f"압축 해제 완료: {dest}")
         self._record_heartbeat(dest)
         if self.cfg.receiver.delete_after_unpack:

@@ -156,6 +156,21 @@ class Engine(QObject):
     def busy(self) -> bool:
         return self._worker is not None
 
+    @property
+    def paused(self) -> bool:
+        return self._paused
+
+    def reschedule(self) -> None:
+        """Settings changed (time, interval): re-arm the next slot. Leaves a
+        run in progress, a pending retry and a paused engine alone."""
+        if (self._running and not self._paused and self.cfg.role == "sender"
+                and self._worker is None and self._retry_count == 0):
+            self._schedule_next()
+
+    @property
+    def receiver(self) -> Receiver:
+        return self._receiver
+
     # ------------------------------------------------------------- sender
 
     def _run_now(self) -> None:
