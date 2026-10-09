@@ -78,12 +78,10 @@ def _tray_pixmap(state: str, size: int) -> QPixmap:
     else:
         draw_logo(p, rect, line=line)
     if state in ("warn", "err"):
-        r = size * 0.36
-        badge = QRectF(size - r - size * 0.02, size * 0.04, r, r)
-        # A thin ring in the window colour keeps the badge readable over the
-        # dot it overlaps.
-        p.setBrush(qcolor("sf"))
-        p.drawEllipse(badge.adjusted(-size * 0.04, -size * 0.04, size * 0.04, size * 0.04))
+        # §03: a plain dot at the top right, about a third of the icon, no
+        # ring (a ring in the window colour turned near-black in dark mode).
+        r = size * 0.30
+        badge = QRectF(size - r - size * 0.02, size * 0.06, r, r)
         p.setBrush(qcolor("wn" if state == "warn" else "er"))
         p.drawEllipse(badge)
     p.end()
