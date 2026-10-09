@@ -1,65 +1,64 @@
-"""First-run wizard, one question per page.
+"""나루 설정 - the first-run wizard, as drawn in 나루 디자인 시스템 §09 설치 마법사.
 
-Laid out by design/FastAPI 관리화면 설계/나루 디자인 참고 조사: a page asks
-one thing and has one main button (bottom right); secondary actions are
-text buttons; no transport names or fingerprints; 해요체; the last page is
-a real test transfer, not "saved".
+    0  이 컴퓨터는 어느 쪽인가요?            two choice cards
+    sender    1 받는 컴퓨터에 뜬 코드를 넣어 주세요   code input, connects when complete
+              2 어떤 폴더를 보낼까요?                path + 바꾸기, three tiles
+              3 얼마나 자주 보낼까요?                option rows, 하루에 한 번 추천
+              4 건너가는지 확인하고 있어요 -> 잘 건너갔어요   the real test transfer
+    receiver  1 보내는 컴퓨터에 이 코드를 넣어 주세요   teal code panel, waiting line
 
-    0  role       이 컴퓨터는 어떤 일을 하나요?
-    receiver      1 ready (Tailscale on, why the firewall prompt matters)
-                  2 code  (show it, wait for the sender's test file)
-    sender        3 folder  4 how often  5 code  6 test transfer
-
-The sender enters the code last: the pairing request carries the chosen
-interval to the receiver (its silence detection uses it), and the code's
-10-minute life then only has to cover typing it in.
+One question and one main button (bottom right) per page; 이전 bottom left;
+step dots on top; pages turn with the 250ms slide (widgets.SlideStack).
+The code is consumed by /pair on page 1; the interval chosen on page 3
+reaches the receiver with /confirm (pairing.confirm_test_transfer).
 
 Launched by main.py before MainWindow whenever cfg.onboarded is False.
 There is no cancel button (onboarding is mandatory), but closing the window
-still has to release the pairing listener's socket, so both accept() and
-reject() clean up. The test transfer runs on a QThread so compressing and
-sending a real file never freezes the dialog.
+still releases the pairing listener's socket: accept() and reject() both
+clean up. The test transfer runs on a QThread so it never freezes the page.
 """
 
 from __future__ import annotations
 
 import socket
 import tempfile
+import time
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QThread, QTimer, Signal
-from PySide6.QtWidgets import (
-    QApplication, QButtonGroup, QDialog, QFileDialog, QHBoxLayout, QLabel,
-    QLineEdit, QMessageBox, QPushButton, QRadioButton, QStackedWidget,
-    QVBoxLayout, QWidget,
-)
+from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal
+from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QHBoxLayout, QLineEdit, QVBoxLayout, QWidget
 
 from tsbackup import pairing
 from tsbackup.config import ROLE_RECEIVER, ROLE_SENDER, config_dir
 
-from .theme import c
+from . import wording
+from .icons import window_icon
+from .theme import set_prop
+from .widgets import (
+    ChoiceCard, CodePanel, OptionRow, SlideStack, StatTile, StatusLine, StepDots, StepList,
+    button, hbox, label, page_widget, set_code_font,
+)
 
-PAGE_ROLE, PAGE_READY, PAGE_CODE, PAGE_FOLDER, PAGE_SCHEDULE, PAGE_PAIR, PAGE_TEST = range(7)
+PAGE_ROLE, PAGE_PAIR, PAGE_FOLDER, PAGE_SCHEDULE, PAGE_TEST, PAGE_CODE = range(6)
+SENDER_PAGES = [PAGE_ROLE, PAGE_PAIR, PAGE_FOLDER, PAGE_SCHEDULE, PAGE_TEST]
+RECEIVER_PAGES = [PAGE_ROLE, PAGE_CODE]
 
-SCHEDULE_PRESETS = [
-    ("하루에 한 번", 1440),
-    ("6시간마다", 360),
-    ("일주일에 한 번", 10080),
+SCHEDULE_PRESETS = [   # (minutes, badge)
+    (360, ""),
+    (1440, "추천"),
+    (10080, ""),
 ]
 
-# pairing.run_test_transfer()'s step keys, as the page says them.
-STEP_TEXT = {
-    "압축": "작은 파일을 압축해요",
-    "전송": "받는 컴퓨터로 보내요",
-    "수신·해제 확인": "받는 컴퓨터가 받아서 풀었는지 확인해요",
-}
+# pairing.run_test_transfer()'s step keys, in order, as the page says them.
+STEPS = [("압축", "작은 시험 파일 만들기"),
+         ("전송", "건너편으로 보내기"),
+         ("수신·해제 확인", "받는 컴퓨터가 풀어 보기")]
 
 
 class _TestTransferWorker(QObject):
-    """Qt wrapper around pairing.run_test_transfer() - the actual logic
-    lives there, Qt-free, so it can be covered by the headless selftest
-    suite too. This class only runs it on a worker thread and translates
-    its plain step()/return-value callback into Qt signals."""
+    """Qt wrapper around pairing.run_test_transfer() - the logic lives there,
+    Qt-free, covered by the headless selftest. This only runs it on a worker
+    thread and turns its step()/return value into signals."""
 
     step = Signal(str, str)        # label, "running" | "ok" | "fail"
     finished = Signal(bool, str)   # ok, detail
@@ -72,27 +71,18 @@ class _TestTransferWorker(QObject):
 
     def run(self) -> None:
         ok, detail = pairing.run_test_transfer(
-            self._cfg.sender, self._code, self._confirm_token,
-            step=self.step.emit,
-        )
+            self._cfg.sender, self._code, self._confirm_token, step=self.step.emit)
         self.finished.emit(ok, detail)
 
 
-def _primary(text: str) -> QPushButton:
-    b = QPushButton(text)
-    b.setDefault(True)
-    b.setStyleSheet(
-        f"QPushButton {{ background: {c('primary')}; color: {c('on_primary')}; border: none; "
-        "border-radius: 4px; padding: 7px 18px; font-weight: 600; } "
-        "QPushButton:disabled { background: #9e9e9e; color: #eeeeee; }")
-    return b
+def _copula(text: str) -> str:
+    """"오늘 새벽 4시" + 예요, "오늘 새벽 4:26" + 이에요."""
+    return text + ("예요" if text.endswith("시") else "이에요")
 
 
-def _text_button(text: str) -> QPushButton:
-    b = QPushButton(text)
-    b.setFlat(True)
-    b.setStyleSheet(f"QPushButton {{ border: none; color: {c('primary')}; padding: 7px 8px; }}")
-    return b
+def _valid_code(text: str) -> bool:
+    raw = text.strip().upper().replace("-", "").replace(" ", "")
+    return len(raw) == pairing.CODE_CHARS
 
 
 class SetupWizard(QDialog):
@@ -100,170 +90,424 @@ class SetupWizard(QDialog):
         super().__init__(parent)
         self.cfg = cfg
         self._log = log
-        self.setWindowTitle("TS Backup 설정")
-        self.setMinimumSize(560, 440)
+        self.setWindowTitle("나루 설정")
+        self.setWindowIcon(window_icon())
+        self.setMinimumSize(720, 560)
+        self.resize(720, 560)
 
         self._listener: pairing.PairingListener | None = None
         self._poll_timer = QTimer(self)
         self._poll_timer.timeout.connect(self._poll_paired)
+        self._pair_debounce = QTimer(self)
+        self._pair_debounce.setSingleShot(True)
+        self._pair_debounce.setInterval(400)
+        self._pair_debounce.timeout.connect(self._resolve_code)
         self._thread: QThread | None = None
         self._worker: _TestTransferWorker | None = None
         self._pair_payload: dict = {}
         self._pair_code = ""
-        self._ready_ip: str | None = None
+        self._paired_code = ""
+        self._target = ""
+        self._step_started: dict[str, float] = {}
 
-        self.stack = QStackedWidget()
         root = QVBoxLayout(self)
-        root.addWidget(self.stack)
+        root.setContentsMargins(40, 28, 40, 28)
+        root.setSpacing(0)
+        self.dots = StepDots(5)
+        root.addWidget(self.dots)
+        root.addSpacing(36)
+        self.stack = SlideStack()
+        root.addWidget(self.stack, 1)
 
         self.stack.addWidget(self._build_role_page())       # PAGE_ROLE
-        self.stack.addWidget(self._build_ready_page())      # PAGE_READY
-        self.stack.addWidget(self._build_code_page())       # PAGE_CODE
+        self.stack.addWidget(self._build_pair_page())       # PAGE_PAIR
         self.stack.addWidget(self._build_folder_page())     # PAGE_FOLDER
         self.stack.addWidget(self._build_schedule_page())   # PAGE_SCHEDULE
-        self.stack.addWidget(self._build_pair_page())       # PAGE_PAIR
         self.stack.addWidget(self._build_test_page())       # PAGE_TEST
+        self.stack.addWidget(self._build_code_page())       # PAGE_CODE
+        self._show_dots()
 
-    # -------------------------------------------------------- page frame
+    # ------------------------------------------------------------ frame
 
-    def _page(self, title: str, hint: str = "") -> tuple[QWidget, QVBoxLayout, QHBoxLayout]:
-        """Title, optional one-line hint, a body, and a button row whose
-        right end is reserved for the page's one main button."""
-        w = QWidget()
+    def _page(self, title: str, sub: str) -> tuple[QWidget, QVBoxLayout, QHBoxLayout]:
+        w = page_widget()
         lay = QVBoxLayout(w)
-        lay.setContentsMargins(24, 24, 24, 16)
-        lay.setSpacing(12)
-        t = QLabel(title)
-        t.setWordWrap(True)
-        t.setStyleSheet("font-size: 20px; font-weight: 600;")
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        t = label(title, "title", wrap=True)
         lay.addWidget(t)
-        if hint:
-            h = QLabel(hint)
-            h.setWordWrap(True)
-            h.setStyleSheet(f"color: {c('muted')};")
-            lay.addWidget(h)
+        lay.addSpacing(8)
+        s = label(sub, "body2", wrap=True)
+        lay.addWidget(s)
+        lay.addSpacing(28)
         body = QVBoxLayout()
-        body.setSpacing(8)
+        body.setSpacing(10)
         lay.addLayout(body)
         lay.addStretch(1)
         row = QHBoxLayout()
+        row.setSpacing(8)
         lay.addLayout(row)
+        w.title_label = t     # type: ignore[attr-defined]
+        w.sub_label = s       # type: ignore[attr-defined]
         return w, body, row
 
-    # --------------------------------------------------------- role page
+    def _back(self, to: int) -> object:
+        b = button("이전", "quiet")
+        b.clicked.connect(lambda: self._go(to))
+        return b
+
+    def _flow(self) -> list[int]:
+        return SENDER_PAGES if self.cfg.role == ROLE_SENDER else RECEIVER_PAGES
+
+    def _go(self, page: int) -> None:
+        self.stack.slide_to(page)
+        self._show_dots()
+
+    def _show_dots(self) -> None:
+        flow = self._flow()
+        cur = self.stack.currentIndex()
+        self.dots.set_step(flow.index(cur) if cur in flow else 0, len(flow))
+
+    # -------------------------------------------------------- 0 · role
 
     def _build_role_page(self) -> QWidget:
-        w, body, row = self._page(
-            "이 컴퓨터는 어떤 일을 하나요?",
-            "두 대 이상에 각각 설치하고, 한 대는 보내고 나머지는 받게 해 주세요.")
-        self.role_sender = QRadioButton("보내는 컴퓨터 - 작업 폴더를 정해진 간격마다 압축해서 보내요")
-        self.role_receiver = QRadioButton("받는 컴퓨터 - 보내온 압축을 받아서 날짜별로 풀어 둬요")
-        self.role_sender.setChecked(True)
-        for radio, note in ((self.role_sender, "보통 평소에 작업하는 PC"),
-                            (self.role_receiver, "보통 집에 두는 PC나 서버. 켜 두기만 하면 돼요")):
-            body.addWidget(radio)
-            n = QLabel(note)
-            n.setStyleSheet(f"color: {c('faint')}; margin-left: 24px;")
-            body.addWidget(n)
+        w, body, row = self._page("이 컴퓨터는 어느 쪽인가요?",
+                                  "컴퓨터마다 한 번씩 정해요. 나중에 설정에서 바꿀 수 있어요.")
+        self.role_sender = ChoiceCard("↑", "보내는 컴퓨터",
+                                      "작업 폴더를 정해진 때마다 압축해서 건너편으로 보내요.",
+                                      "평소 작업하는 PC")
+        self.role_receiver = ChoiceCard("↓", "받는 컴퓨터",
+                                        "건너온 압축을 날짜별로 풀어서 보관해요. 켜 두기만 하면 돼요.",
+                                        "늘 켜 두는 PC")
+        self.role_sender.clicked.connect(lambda: self._pick_role(ROLE_SENDER))
+        self.role_receiver.clicked.connect(lambda: self._pick_role(ROLE_RECEIVER))
+        body.addLayout(hbox(self.role_sender, self.role_receiver, spacing=16))
+        self._pick_role(ROLE_SENDER)
         row.addStretch(1)
-        nxt = _primary("다음")
+        nxt = button("다음", "primary", large=True)
         nxt.clicked.connect(self._role_next)
         row.addWidget(nxt)
         return w
 
+    def _pick_role(self, role: str) -> None:
+        self.cfg.role = role
+        self.role_sender.setSelected(role == ROLE_SENDER)
+        self.role_receiver.setSelected(role == ROLE_RECEIVER)
+        if hasattr(self, "dots"):
+            self._show_dots()
+
     def _role_next(self) -> None:
-        if self.role_sender.isChecked():
-            self.cfg.role = ROLE_SENDER
-            self.stack.setCurrentIndex(PAGE_FOLDER)
+        if self.cfg.role == ROLE_SENDER:
+            self._go(PAGE_PAIR)
+            self.code_entry.setFocus()
         else:
-            self.cfg.role = ROLE_RECEIVER
-            self.stack.setCurrentIndex(PAGE_READY)
-            self._check_ready()
+            self._go(PAGE_CODE)
+            self._start_receiver_pairing()
 
-    # ------------------------------------------------- receiver: ready
+    # ------------------------------------------------ sender 1 · code
 
-    def _build_ready_page(self) -> QWidget:
-        w, body, row = self._page(
-            "먼저 연결을 확인할게요",
-            "보내는 컴퓨터는 Tailscale로 이 컴퓨터에 닿아요.")
-        self.ready_status = QLabel("")
-        self.ready_status.setWordWrap(True)
-        body.addWidget(self.ready_status)
-        fw = QLabel("코드를 처음 띄울 때 Windows가 방화벽 허용을 물어볼 수 있어요. "
-                    "허용해 주세요. 보내는 컴퓨터가 이 컴퓨터에 닿으려면 필요해요.")
-        fw.setWordWrap(True)
-        fw.setStyleSheet(f"color: {c('muted')};")
-        body.addWidget(fw)
-        back = _text_button("이전")
-        back.clicked.connect(lambda: self.stack.setCurrentIndex(PAGE_ROLE))
-        again = _text_button("다시 확인")
-        again.clicked.connect(self._check_ready)
-        row.addWidget(back)
-        row.addWidget(again)
+    def _build_pair_page(self) -> QWidget:
+        w, body, row = self._page("받는 컴퓨터에 뜬 코드를 넣어 주세요",
+                                  "받는 컴퓨터에서 나루를 먼저 열면 코드가 보여요.")
+        self.code_entry = QLineEdit()
+        self.code_entry.setProperty("kind", "code")
+        self.code_entry.setPlaceholderText("XXXXX-XXXX")
+        self.code_entry.setMaxLength(12)
+        set_code_font(self.code_entry, 24, entry=True)
+        self.code_entry.textEdited.connect(self._code_edited)
+        self.code_entry.returnPressed.connect(self._resolve_code)
+        body.addWidget(self.code_entry)
+        self.pair_result = label("", "caption2", wrap=True)
+        body.addWidget(self.pair_result)
+        row.addWidget(self._back(PAGE_ROLE))
         row.addStretch(1)
-        self.ready_next = _primary("다음")
-        self.ready_next.clicked.connect(self._ready_next)
-        row.addWidget(self.ready_next)
+        self.pair_next = button("다음", "primary", large=True)
+        self.pair_next.setEnabled(False)
+        self.pair_next.clicked.connect(lambda: self._go(PAGE_FOLDER))
+        row.addWidget(self.pair_next)
         return w
 
-    def _check_ready(self) -> None:
-        self._ready_ip = pairing.local_tailscale_ip()
-        if self._ready_ip:
-            self.ready_status.setText(f"✓ Tailscale이 켜져 있어요 ({self._ready_ip})")
-            self.ready_status.setStyleSheet(f"color: {c('primary')};")
-        else:
-            self.ready_status.setText(
-                "Tailscale이 꺼져 있거나 로그인이 안 돼 있어요. 켜고 로그인한 뒤 다시 확인해 주세요.")
-            self.ready_status.setStyleSheet(f"color: {c('danger')};")
-        self.ready_next.setEnabled(bool(self._ready_ip))
+    def _code_edited(self, text: str) -> None:
+        upper = text.upper()
+        if upper != text:
+            pos = self.code_entry.cursorPosition()
+            self.code_entry.setText(upper)
+            self.code_entry.setCursorPosition(pos)
+        if self._paired_code and upper.strip() != self._paired_code:
+            self._paired_code = ""
+        self.pair_next.setEnabled(bool(self._paired_code))
+        set_prop(self.code_entry, "state", None)
+        self.pair_result.setText("")
+        if _valid_code(upper):
+            self._pair_debounce.start()
 
-    def _ready_next(self) -> None:
-        if not self._ready_ip:
+    def _resolve_code(self) -> None:
+        code = self.code_entry.text().strip().upper()
+        if not code or code == self._paired_code:
             return
-        self.stack.setCurrentIndex(PAGE_CODE)
-        self._start_receiver_pairing()
+        if not _valid_code(code):
+            self._show_pair_error("코드는 9자리예요. 받는 컴퓨터에 뜬 코드를 그대로 넣어 주세요.")
+            return
+        self.pair_result.setText("연결해 보고 있어요...")
+        set_prop(self.pair_result, "tone", "tl")
+        QApplication.processEvents()
+        device_id = self.cfg.ensure_device_id()
+        try:
+            payload = pairing.resolve_and_pair(
+                code,
+                device_name=socket.gethostname(),
+                device_id=device_id,
+                interval_minutes=self.cfg.sender.interval_minutes or 1440,
+                transport_preference="taildrop",
+            )
+        except pairing.PairingError as exc:
+            self._show_pair_error(f"연결하지 못했어요. {exc}")
+            return
 
-    # -------------------------------------------------- receiver: code
+        self._pair_payload = payload
+        self._pair_code = code
+        self._paired_code = code
+        self._target = payload.get("device_name", "")
+        s = self.cfg.sender
+        s.transport = "taildrop"
+        if self._target:
+            s.taildrop_targets = [self._target]
+        ip, _secret = pairing.unpack_code(code)
+        s.host = ip
+        fp = payload.get("host_key_fingerprint")
+        if fp:
+            s.host_key = fp
+        set_prop(self.code_entry, "state", "ok")
+        self.pair_result.setText(f"✓ {self._target}와 연결할 수 있어요")
+        set_prop(self.pair_result, "tone", "tl")
+        self.pair_next.setEnabled(True)
+
+    def _show_pair_error(self, text: str) -> None:
+        set_prop(self.code_entry, "state", "error")
+        self.pair_result.setText(text)
+        set_prop(self.pair_result, "tone", "er")
+        self.pair_next.setEnabled(False)
+
+    # ---------------------------------------------- sender 2 · folder
+
+    def _build_folder_page(self) -> QWidget:
+        w, body, row = self._page("어떤 폴더를 보낼까요?", "폴더 안의 파일을 빠짐없이 그대로 보내요.")
+        self.source_edit = QLineEdit(self.cfg.sender.source_dir or self._default_folder())
+        self.source_edit.setReadOnly(True)
+        self.source_edit.setFocusPolicy(Qt.NoFocus)
+        change = button("바꾸기")
+        change.clicked.connect(self._browse_source)
+        body.addLayout(hbox(self.source_edit, change, spacing=12))
+        self.folder_error = label("이 폴더를 찾을 수 없어요. 다시 골라 주세요", "caption2", "er")
+        self.folder_error.hide()
+        body.addWidget(self.folder_error)
+        self.tile_dirs = StatTile("하위 폴더")
+        self.tile_size = StatTile("크기")
+        self.tile_eta = StatTile("첫 전송")
+        for t in (self.tile_dirs, self.tile_size, self.tile_eta):
+            t.value.setProperty("role", "numberSm")
+            t.detail.hide()
+        body.addLayout(hbox(self.tile_dirs, self.tile_size, self.tile_eta, spacing=12))
+        row.addWidget(self._back(PAGE_PAIR))
+        row.addStretch(1)
+        self.folder_next = button("다음", "primary", large=True)
+        self.folder_next.clicked.connect(self._folder_next)
+        row.addWidget(self.folder_next)
+
+        from .workers import FolderStats
+        self._stats = FolderStats()
+        self._stats.done.connect(self._show_folder_stats)
+        self._folder_changed()
+        return w
+
+    @staticmethod
+    def _default_folder() -> str:
+        guess = Path.home() / "PycharmProjects"
+        return str(guess) if guess.is_dir() else ""
+
+    def _browse_source(self) -> None:
+        chosen = QFileDialog.getExistingDirectory(self, "보낼 폴더 고르기", self.source_edit.text() or "")
+        if chosen:
+            self.source_edit.setText(str(Path(chosen)))
+            self._folder_changed()
+
+    def _folder_changed(self) -> None:
+        text = self.source_edit.text().strip()
+        ok = bool(text) and Path(text).is_dir()
+        self.folder_next.setEnabled(ok)
+        set_prop(self.source_edit, "state", None if ok or not text else "error")
+        self.folder_error.setVisible(bool(text) and not ok)
+        if not text:
+            self.source_edit.setPlaceholderText("보낼 폴더를 골라 주세요")
+        for t in (self.tile_dirs, self.tile_size, self.tile_eta):
+            t.value.setText("…" if ok else "-")
+        if ok:
+            self._stats.start(text)
+
+    def _show_folder_stats(self, folder: str, dirs: int, total: int) -> None:
+        if folder != self.source_edit.text().strip():
+            return
+        self.tile_dirs.value.setText(f"{dirs}개")
+        self.tile_size.value.setText(wording.size(total))
+        self.tile_eta.value.setText(wording.first_send_estimate(total))
+
+    def _folder_next(self) -> None:
+        self.cfg.sender.source_dir = self.source_edit.text().strip()
+        if not self.cfg.sender.work_dir:
+            self.cfg.sender.work_dir = str(Path(tempfile.gettempdir()) / "TsBackupWork")
+        self._go(PAGE_SCHEDULE)
+
+    # -------------------------------------------- sender 3 · how often
+
+    def _build_schedule_page(self) -> QWidget:
+        w, body, row = self._page("얼마나 자주 보낼까요?", "그때 컴퓨터가 꺼져 있으면, 다음에 켤 때 보내요.")
+        self.schedule_rows: dict[int, OptionRow] = {}
+        at = self.cfg.sender.at_time
+        for minutes, badge in SCHEDULE_PRESETS:
+            r = OptionRow(wording.schedule_name(minutes), wording.schedule_note(minutes, at), badge)
+            r.clicked.connect(lambda m=minutes: self._pick_schedule(m))
+            self.schedule_rows[minutes] = r
+            body.addWidget(r)
+        self._pick_schedule(1440)
+        row.addWidget(self._back(PAGE_FOLDER))
+        row.addStretch(1)
+        go = button("시험 전송하기", "primary", large=True)
+        go.clicked.connect(self._schedule_next)
+        row.addWidget(go)
+        return w
+
+    def _pick_schedule(self, minutes: int) -> None:
+        self._schedule = minutes
+        for m, r in self.schedule_rows.items():
+            r.setSelected(m == minutes)
+
+    def _schedule_minutes(self) -> int:
+        return self._schedule
+
+    def _schedule_next(self) -> None:
+        self.cfg.sender.interval_minutes = self._schedule
+        self._go(PAGE_TEST)
+        self._run_test_transfer()
+
+    # ---------------------------------------------- sender 4 · test
+
+    def _build_test_page(self) -> QWidget:
+        w, body, row = self._page("건너가는지 확인하고 있어요",
+                                  "작은 파일 하나로 처음부터 끝까지 한 번 해 볼게요.")
+        self.test_page = w
+        self.steps = StepList([name for _key, name in STEPS])
+        body.addWidget(self.steps)
+        row.addWidget(self._back(PAGE_SCHEDULE))
+        row.addStretch(1)
+        self.test_finish = button("확인하는 중", "primary", large=True)
+        self.test_finish.setEnabled(False)
+        self.test_finish.clicked.connect(self._test_primary)
+        row.addWidget(self.test_finish)
+        self._test_ok = False
+        return w
+
+    def _run_test_transfer(self) -> None:
+        self.steps.reset()
+        self._test_ok = False
+        self._step_started.clear()
+        self.test_page.title_label.setText("건너가는지 확인하고 있어요")
+        self.test_page.sub_label.setText("작은 파일 하나로 처음부터 끝까지 한 번 해 볼게요.")
+        self.test_finish.setText("확인하는 중")
+        self.test_finish.setEnabled(False)
+
+        confirm_token = self._pair_payload.get("confirm_token", "")
+        thread = QThread(self)
+        worker = _TestTransferWorker(self.cfg, self._pair_code, confirm_token)
+        worker.moveToThread(thread)
+        worker.step.connect(self._on_test_step)
+        worker.finished.connect(self._on_test_finished)
+        thread.started.connect(worker.run)
+        self._thread, self._worker = thread, worker
+        thread.start()
+
+    def _on_test_step(self, key: str, status: str) -> None:
+        keys = [k for k, _ in STEPS]
+        if key not in keys:
+            return
+        i = keys.index(key)
+        if status == "running":
+            self._step_started[key] = time.monotonic()
+            self.steps.set_step(i, "run", "하는 중")
+            return
+        took = time.monotonic() - self._step_started.get(key, time.monotonic())
+        if status == "ok":
+            note = wording.duration(took)
+            if key == "전송" and self._target:
+                note += f" · {self._target}"
+            if key == "수신·해제 확인":
+                note = f"{wording.duration(took)} 만에 확인"
+            self.steps.set_step(i, "ok", note)
+        else:
+            self.steps.set_step(i, "err", "안 됐어요")
+
+    def _on_test_finished(self, ok: bool, detail: str) -> None:
+        if self._thread:
+            self._thread.quit()
+            self._thread.wait()
+        self._thread = None
+        self._worker = None
+        self._test_ok = ok
+        if ok:
+            from datetime import datetime
+
+            from tsbackup import schedule
+
+            s = self.cfg.sender
+            nxt = schedule.next_slot(datetime.now(), s.interval_minutes, s.at_time).timestamp()
+            self.test_page.title_label.setText("잘 건너갔어요")
+            self.test_page.sub_label.setText(
+                f"다음 전송은 {_copula(wording.when(nxt))}. 창을 닫아도 나루는 트레이에서 계속 일해요.")
+            self.test_finish.setText("마침")
+        else:
+            self.test_page.title_label.setText("건너가지 못했어요")
+            self.test_page.sub_label.setText(
+                f"{detail} 받는 컴퓨터가 켜져 있는지 확인하고 다시 해 주세요.")
+            self.test_finish.setText("다시 해 보기")
+        self.test_finish.setEnabled(True)
+
+    def _test_primary(self) -> None:
+        if self._test_ok:
+            self.accept()
+        else:
+            self._run_test_transfer()
+
+    # ---------------------------------------------- receiver 1 · code
 
     def _build_code_page(self) -> QWidget:
-        w, body, row = self._page(
-            "보내는 컴퓨터에 이 코드를 넣어 주세요",
-            "10분 동안, 한 번만 쓸 수 있어요.")
-        code_row = QHBoxLayout()
-        self.code_label = QLabel("")
-        self.code_label.setStyleSheet(
-            "font-family: 'Cascadia Mono','D2Coding',Consolas,monospace; "
-            f"font-size: 30px; font-weight: 700; color: {c('teal')};")
-        code_row.addWidget(self.code_label)
-        copy_btn = _text_button("복사")
-        copy_btn.clicked.connect(self._copy_receiver_code)
-        code_row.addWidget(copy_btn)
-        code_row.addStretch(1)
-        body.addLayout(code_row)
-        carried = QLabel(f"이 코드로 이 컴퓨터 이름({socket.gethostname()})과 받을 폴더가 함께 "
-                         "건너가요. 보내는 컴퓨터에서 따로 적을 필요 없어요.")
-        carried.setWordWrap(True)
-        carried.setStyleSheet(f"color: {c('faint')};")
-        body.addWidget(carried)
-        self.pair_status = QLabel("")
-        self.pair_status.setWordWrap(True)
+        w, body, row = self._page("보내는 컴퓨터에 이 코드를 넣어 주세요",
+                                  "같은 Tailscale 네트워크에 있는 컴퓨터에서만 쓸 수 있어요.")
+        self.code_panel = CodePanel()
+        self.code_panel.copy.connect(self._copy_receiver_code)
+        self.code_panel.renew.connect(self._regenerate_receiver_code)
+        self.code_label = self.code_panel.code
+        body.addWidget(self.code_panel)
+        body.addSpacing(4)
+        self.pair_status = StatusLine()
         body.addWidget(self.pair_status)
-
-        regen = _text_button("새 코드")
-        regen.clicked.connect(self._regenerate_receiver_code)
-        row.addWidget(regen)
-        self.receiver_finish_anyway = _text_button("시험 없이 마치기")
+        row.addWidget(self._back(PAGE_ROLE))
+        row.addStretch(1)
+        self.receiver_finish_anyway = button("시험 없이 마치기", "text")
         self.receiver_finish_anyway.setVisible(False)
         self.receiver_finish_anyway.clicked.connect(self._finish_without_confirm)
         row.addWidget(self.receiver_finish_anyway)
-        row.addStretch(1)
-        self.receiver_finish = _primary("마침")
+        self.receiver_finish = button("마침", "primary", large=True)
         self.receiver_finish.setEnabled(False)
         self.receiver_finish.clicked.connect(self.accept)
         row.addWidget(self.receiver_finish)
         return w
 
     def _start_receiver_pairing(self) -> None:
+        ip = pairing.local_tailscale_ip()
+        if not ip:
+            self.code_panel.set_code("—")
+            self.pair_status.set("err", "Tailscale이 꺼져 있거나 로그인이 안 돼 있어요. "
+                                        "켜고 나서 새 코드를 눌러 주세요.")
+            return
         r = self.cfg.receiver
         if not r.incoming_dir:
             r.incoming_dir = str(Path.home() / "Downloads" / "TsBackupIncoming")
@@ -271,35 +515,41 @@ class SetupWizard(QDialog):
             r.unpack_dir = str(Path.home() / "TsBackupUnpacked")
         Path(r.incoming_dir).mkdir(parents=True, exist_ok=True)
         Path(r.unpack_dir).mkdir(parents=True, exist_ok=True)
-
-        known_path = config_dir() / pairing.KNOWN_SENDERS_FILENAME
-        self._listener = pairing.PairingListener(self.cfg, known_path, log=self._log)
-        self.code_label.setText(self._listener.start(self._ready_ip))
-        self.pair_status.setText("보내는 컴퓨터를 기다리고 있어요")
+        if self._listener is None:
+            known_path = config_dir() / pairing.KNOWN_SENDERS_FILENAME
+            self._listener = pairing.PairingListener(self.cfg, known_path, log=self._log)
+            self.code_panel.set_code(self._listener.start(ip))
+        else:
+            self.code_panel.set_code(self._listener.regenerate())
+        self.pair_status.set("wait", "보내는 컴퓨터를 기다리고 있어요")
         self._poll_timer.start(1000)
 
     def _regenerate_receiver_code(self) -> None:
         if not self._listener:
+            self._start_receiver_pairing()
             return
-        self.code_label.setText(self._listener.regenerate())
-        self.pair_status.setText("보내는 컴퓨터를 기다리고 있어요")
+        self.code_panel.set_code(self._listener.regenerate())
+        self.pair_status.set("wait", "보내는 컴퓨터를 기다리고 있어요")
         self.receiver_finish.setEnabled(False)
         self.receiver_finish_anyway.setVisible(False)
         if not self._poll_timer.isActive():
             self._poll_timer.start(1000)
 
     def _copy_receiver_code(self) -> None:
-        text = self.code_label.text()
-        if text:
+        text = self.code_panel.code.text()
+        if text and text != "—":
             QApplication.clipboard().setText(text)
+            self.code_panel.copy_btn.setText("복사했어요")
+            QTimer.singleShot(1500, lambda: self.code_panel.copy_btn.setText("복사"))
 
     def _finish_without_confirm(self) -> None:
-        """Escape hatch for a sender that never completes (walked away,
-        uninstalled, network dead for good) - without this the receiver
-        would be stuck on a code that only offers 새 코드, with no way to
-        just leave the wizard. Deliberately secondary to 마침: needs an
-        explicit warning, and finishes regardless of is_confirmed()."""
-        resp = QMessageBox.warning(
+        """Escape hatch for a sender that never completes - without it the
+        receiver would be stuck on a code that only offers 새 코드.
+        Deliberately secondary to 마침: it asks first, and finishes
+        regardless of is_confirmed()."""
+        from PySide6.QtWidgets import QMessageBox
+
+        resp = QMessageBox.question(
             self, "시험 없이 마치기",
             "보내는 컴퓨터의 시험 파일을 아직 받지 못했어요. 그래도 마칠까요?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -312,231 +562,20 @@ class SetupWizard(QDialog):
         if not self._listener:
             return
         # is_paired() alone is not "done": the sender's mandatory test
-        # transfer still needs this listener alive to answer /confirm
-        # afterward. Enabling 마침 (and letting the receiver close the
-        # wizard, which stops the listener) before that round trip lands
-        # strands the sender. Keep waiting, and say so, until is_confirmed().
+        # transfer still needs this listener alive to answer /confirm.
+        # Enabling 마침 (which stops the listener) before that strands the
+        # sender. Keep waiting, and say so, until is_confirmed().
         if self._listener.is_confirmed():
-            self.pair_status.setText("✓ 시험 파일까지 잘 받았어요. 이제 마쳐도 돼요.")
+            self.pair_status.set("ok", "✓ 시험 파일까지 잘 받았어요. 이제 마쳐도 돼요.")
             self.receiver_finish.setEnabled(True)
             self.receiver_finish_anyway.setVisible(False)
             self._poll_timer.stop()
         elif self._listener.is_expired():
-            self.pair_status.setText("코드가 만료됐어요. 새 코드를 만들어 주세요.")
+            self.pair_status.set("warn", "코드가 만료됐어요. 새 코드를 만들어 주세요.")
             self.receiver_finish_anyway.setVisible(True)
             self._poll_timer.stop()
         elif self._listener.is_paired():
-            self.pair_status.setText("연결됐어요. 시험 파일이 오기를 기다리고 있어요.")
-
-    # ---------------------------------------------------- sender: folder
-
-    def _build_folder_page(self) -> QWidget:
-        w, body, row = self._page(
-            "어떤 폴더를 보낼까요?",
-            ".env와 .git까지, 그 안의 전부를 보내요.")
-        dir_row = QHBoxLayout()
-        self.source_edit = QLineEdit(self.cfg.sender.source_dir)
-        self.source_edit.textChanged.connect(self._folder_changed)
-        browse = _text_button("찾아보기")
-        browse.clicked.connect(self._browse_source)
-        dir_row.addWidget(self.source_edit, 1)
-        dir_row.addWidget(browse)
-        body.addLayout(dir_row)
-        self.folder_summary = QLabel("")
-        self.folder_summary.setStyleSheet(f"color: {c('faint')};")
-        body.addWidget(self.folder_summary)
-
-        from .main_window import _FolderSummary
-        self._summary = _FolderSummary()
-        self._summary.done.connect(self.folder_summary.setText)
-
-        back = _text_button("이전")
-        back.clicked.connect(lambda: self.stack.setCurrentIndex(PAGE_ROLE))
-        row.addWidget(back)
-        row.addStretch(1)
-        self.folder_next = _primary("다음")
-        self.folder_next.clicked.connect(self._folder_next)
-        row.addWidget(self.folder_next)
-        self._folder_changed(self.source_edit.text())
-        return w
-
-    def _browse_source(self) -> None:
-        chosen = QFileDialog.getExistingDirectory(
-            self, "보낼 폴더 고르기", self.source_edit.text() or "")
-        if chosen:
-            self.source_edit.setText(chosen)
-
-    def _folder_changed(self, text: str) -> None:
-        ok = bool(text.strip()) and Path(text.strip()).is_dir()
-        self.folder_next.setEnabled(ok)
-        if ok:
-            self.folder_summary.setText("세는 중이에요...")
-            self._summary.start(text.strip(), ".env와 .git 포함")
-        else:
-            self.folder_summary.setText("" if not text.strip() else "그런 폴더가 없어요.")
-
-    def _folder_next(self) -> None:
-        self.cfg.sender.source_dir = self.source_edit.text().strip()
-        if not self.cfg.sender.work_dir:
-            self.cfg.sender.work_dir = str(Path(tempfile.gettempdir()) / "TsBackupWork")
-        self.stack.setCurrentIndex(PAGE_SCHEDULE)
-
-    # -------------------------------------------------- sender: schedule
-
-    def _build_schedule_page(self) -> QWidget:
-        w, body, row = self._page(
-            "얼마나 자주 보낼까요?",
-            "앱이 켜지면 한 번 보내고, 그 뒤로 이 간격마다 보내요.")
-        self.schedule_group = QButtonGroup(self)
-        for i, (label, minutes) in enumerate(SCHEDULE_PRESETS):
-            radio = QRadioButton(label)
-            radio.setChecked(i == 0)
-            self.schedule_group.addButton(radio, minutes)
-            body.addWidget(radio)
-        back = _text_button("이전")
-        back.clicked.connect(lambda: self.stack.setCurrentIndex(PAGE_FOLDER))
-        row.addWidget(back)
-        row.addStretch(1)
-        nxt = _primary("다음")
-        nxt.clicked.connect(self._schedule_next)
-        row.addWidget(nxt)
-        return w
-
-    def _schedule_minutes(self) -> int:
-        return self.schedule_group.checkedId()
-
-    def _schedule_next(self) -> None:
-        self.cfg.sender.interval_minutes = self._schedule_minutes()
-        self.stack.setCurrentIndex(PAGE_PAIR)
-        self.code_entry.setFocus()
-
-    # ------------------------------------------------------ sender: code
-
-    def _build_pair_page(self) -> QWidget:
-        w, body, row = self._page(
-            "받는 컴퓨터에 뜬 코드를 넣어 주세요",
-            "받는 컴퓨터에서 코드를 띄우면 9자리 코드가 보여요. "
-            "연결되면 바로 작은 파일로 시험해 볼게요.")
-        self.code_entry = QLineEdit()
-        self.code_entry.setPlaceholderText("XXXXX-XXXX")
-        self.code_entry.setStyleSheet(
-            "font-family: 'Cascadia Mono','D2Coding',Consolas,monospace; font-size: 20px;")
-        self.code_entry.returnPressed.connect(self._resolve_code)
-        body.addWidget(self.code_entry)
-        self.pair_result = QLabel("")
-        self.pair_result.setWordWrap(True)
-        body.addWidget(self.pair_result)
-        back = _text_button("이전")
-        back.clicked.connect(lambda: self.stack.setCurrentIndex(PAGE_SCHEDULE))
-        row.addWidget(back)
-        row.addStretch(1)
-        self.pair_button = _primary("연결하고 시험하기")
-        self.pair_button.clicked.connect(self._resolve_code)
-        row.addWidget(self.pair_button)
-        return w
-
-    def _resolve_code(self) -> None:
-        code = self.code_entry.text().strip()
-        if not code:
-            return
-        device_id = self.cfg.ensure_device_id()
-        try:
-            payload = pairing.resolve_and_pair(
-                code,
-                device_name=socket.gethostname(),
-                device_id=device_id,
-                interval_minutes=self._schedule_minutes(),
-                transport_preference="taildrop",
-            )
-        except pairing.PairingError as exc:
-            self.pair_result.setText(f"연결하지 못했어요. {exc}")
-            self.pair_result.setStyleSheet(f"color: {c('danger')};")
-            return
-
-        self._pair_payload = payload
-        self._pair_code = code
-        target = payload.get("device_name", "")
-        s = self.cfg.sender
-        s.transport = "taildrop"
-        if target:
-            s.taildrop_targets = [target]
-        ip, _secret = pairing.unpack_code(code)
-        s.host = ip
-        fp = payload.get("host_key_fingerprint")
-        if fp:
-            s.host_key = fp
-        self.pair_result.setText(f"✓ {target}에 연결됐어요")
-        self.pair_result.setStyleSheet(f"color: {c('teal')};")
-        self.stack.setCurrentIndex(PAGE_TEST)
-        self._run_test_transfer()
-
-    # ---------------------------------------------------------- test page
-
-    def _build_test_page(self) -> QWidget:
-        w, body, row = self._page("작은 파일 하나로 끝까지 해 볼게요")
-        self.step_labels: dict[str, QLabel] = {}
-        for key, text in STEP_TEXT.items():
-            lbl = QLabel(f"○ {text}")
-            self.step_labels[key] = lbl
-            body.addWidget(lbl)
-        self.test_result = QLabel("")
-        self.test_result.setWordWrap(True)
-        body.addWidget(self.test_result)
-        self.test_retry = _text_button("다시 해 보기")
-        self.test_retry.setVisible(False)
-        self.test_retry.clicked.connect(self._run_test_transfer)
-        row.addWidget(self.test_retry)
-        row.addStretch(1)
-        self.test_finish = _primary("마침")
-        self.test_finish.setEnabled(False)
-        self.test_finish.clicked.connect(self.accept)
-        row.addWidget(self.test_finish)
-        return w
-
-    def _run_test_transfer(self) -> None:
-        for key, lbl in self.step_labels.items():
-            lbl.setText(f"○ {STEP_TEXT[key]}")
-        self.test_result.setText("")
-        self.test_finish.setEnabled(False)
-        self.test_retry.setVisible(False)
-
-        confirm_token = self._pair_payload.get("confirm_token", "")
-        thread = QThread(self)
-        worker = _TestTransferWorker(self.cfg, self._pair_code, confirm_token)
-        worker.moveToThread(thread)
-        worker.step.connect(self._on_test_step)
-        worker.finished.connect(self._on_test_finished)
-        thread.started.connect(worker.run)
-        self._thread, self._worker = thread, worker
-        thread.start()
-
-    def _on_test_step(self, label: str, status: str) -> None:
-        mark = {"running": "…", "ok": "✓", "fail": "✕"}.get(status, "○")
-        if label in self.step_labels:
-            self.step_labels[label].setText(f"{mark} {STEP_TEXT.get(label, label)}")
-
-    def _on_test_finished(self, ok: bool, detail: str) -> None:
-        if self._thread:
-            self._thread.quit()
-            self._thread.wait()
-        self._thread = None
-        self._worker = None
-        if ok:
-            from .main_window import _every
-
-            # True by construction: accept() turns on autostart, and the
-            # engine's start() sends once immediately, then every interval.
-            self.test_result.setText(
-                "준비됐어요. 마침을 누르면 첫 백업을 바로 시작하고, 그 뒤로는 "
-                f"{_every(self.cfg.sender.interval_minutes)} 알아서 보내요. 창을 닫아도 "
-                "트레이에서 계속 돌고, 문제가 생길 때만 알려 드릴게요.")
-            self.test_result.setStyleSheet("")
-            self.test_finish.setEnabled(True)
-        else:
-            self.test_result.setText(
-                f"끝까지 가지 못했어요. {detail}\n받는 컴퓨터가 켜져 있는지 확인하고 다시 해 주세요.")
-            self.test_result.setStyleSheet(f"color: {c('danger')};")
-            self.test_retry.setVisible(True)
+            self.pair_status.set("linked", "연결됐어요. 시험 파일이 오기를 기다리고 있어요.")
 
     # ------------------------------------------------------------- close
 
@@ -545,24 +584,24 @@ class SetupWizard(QDialog):
         self.cfg.onboarded = True
         # Finishing the wizard means "ready to run". Without this the
         # engine's loop never started on its own (autostart_engine defaults
-        # to off and only the settings dialog turned it on), so a fresh
-        # install never ran a scheduled backup until someone pressed 켜기.
+        # to off), so a fresh install never ran a scheduled backup.
         self.cfg.autostart_engine = True
         self.cfg.save()
         super().accept()
 
     def reject(self) -> None:
-        # No cancel button - the wizard is mandatory on first run - but the
-        # window can still be closed (Alt+F4 / the X button), which must not
-        # leak a bound listener socket.
+        # No cancel button - onboarding is mandatory - but the window can
+        # still be closed (Alt+F4 / ✕), which must not leak the listener.
         self._cleanup()
         super().reject()
 
     def _cleanup(self) -> None:
         self._poll_timer.stop()
+        self._pair_debounce.stop()
         if self._listener:
             self._listener.stop()
             self._listener = None
         if self._thread:
             self._thread.quit()
             self._thread.wait()
+

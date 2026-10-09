@@ -95,7 +95,9 @@ def _check_gui_imports() -> int:
     from PySide6.QtWidgets import QApplication, QSystemTrayIcon  # noqa: F401
 
     from app.main_window import MainWindow  # noqa: F401
+    from app.settings_window import SettingsWindow  # noqa: F401
     from app.single_instance import InstanceGuard  # noqa: F401
+    from app.toast import Toast  # noqa: F401
     from app.tray import Tray  # noqa: F401
     from app.wizard import SetupWizard  # noqa: F401
 
@@ -118,11 +120,11 @@ def _gui() -> int:
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)   # closing the window hides to tray
-    # Follows the system theme (design guide); every screen colour comes
-    # from app/theme.py's light/dark roles, so dark mode no longer leaves
-    # white text on white cards.
-    from app.theme import apply_font
-    apply_font(app)
+    app.setApplicationDisplayName("나루")
+    # 나루 디자인 시스템: tokens -> palette + QSS, following the system theme
+    # and switching with it (app/theme.py).
+    from app import theme
+    theme.apply(app)
 
     from app.single_instance import InstanceGuard
     shown: dict = {"window": None}

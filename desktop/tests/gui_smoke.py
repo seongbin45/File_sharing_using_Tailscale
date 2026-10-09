@@ -43,9 +43,9 @@ _SANDBOX = tempfile.mkdtemp(prefix="tsbackup_gui_smoke_")
 os.environ["LOCALAPPDATA"] = _SANDBOX
 os.environ["TSBACKUP_CONFIG"] = str(Path(_SANDBOX) / "TsBackup" / "config.json")
 
-from PySide6.QtWidgets import QApplication, QDialog, QMessageBox  # noqa: E402
+from PySide6.QtWidgets import QApplication, QDialog, QLabel, QMessageBox  # noqa: E402
 
-from app.main_window import MainWindow  # noqa: E402
+from app.main_window import MainWindow, ReceiverHome, SenderHome  # noqa: E402
 from app.settings_dialog import SettingsDialog  # noqa: E402
 from app.tray import Tray  # noqa: E402
 from app.wizard import SetupWizard  # noqa: E402
@@ -85,23 +85,41 @@ def _fresh(root: Path, role: str = ROLE_SENDER):
     return cfg, log, engine
 
 
+def _rows(list_card) -> list[list[str]]:
+    """The text of each 목록 행 in a ListCard, as the person reads it."""
+    out = []
+    for i in range(list_card.rows.count()):
+        w = list_card.rows.itemAt(i).widget()
+        if w is not None:
+            out.append([lb.text() for lb in w.findChildren(QLabel) if lb.text()])
+    return out
+
+
+def _wait(app, cond, seconds=10) -> None:
+    deadline = time.time() + seconds
+    while not cond() and time.time() < deadline:
+        app.processEvents()
+        time.sleep(0.02)
+
+
 def test_main_window_both_roles(app: QApplication, root: Path) -> None:
     section("MainWindow construction (both roles)")
     cfg, log, engine = _fresh(root, ROLE_SENDER)
     win = MainWindow(cfg, log, engine, lambda: None)
-    check("sender home has folder/target widgets",
-          hasattr(win, "sender_folder_label") and hasattr(win, "sender_targets_label"))
+    check("a sender gets the sender home", isinstance(win.home, SenderHome))
+    check("...and the header says which side this is", win.role_pill.text() == "보내는 컴퓨터")
     win.close()
 
     cfg2, log2, engine2 = _fresh(root, ROLE_RECEIVER)
     win2 = MainWindow(cfg2, log2, engine2, lambda: None)
-    check("receiver home has stat tiles + silence banner",
-          hasattr(win2, "stat_stored") and hasattr(win2, "silence_banner"))
+    check("a receiver gets the receiver home", isinstance(win2.home, ReceiverHome))
+    check("an empty receiver shows the empty state, not empty tiles (§09 빈 상태)",
+          win2.home.views.currentIndex() == 1)
     win2.close()
 
 
 def test_receiver_home(app: QApplication, root: Path) -> None:
-    section("Receiver home (design 5b): who sent what, free space, silence acknowledged")
+    section("Receiver home (§09): who sent what, free space, silence acknowledged")
     import json as _json
 
     from tsbackup import pairing as pairing_module
@@ -122,29 +140,31 @@ def test_receiver_home(app: QApplication, root: Path) -> None:
     with patch("app.main_window.config_dir", return_value=conf):
         win = MainWindow(cfg, log, engine, lambda: None)
         win.show()
-        row = win.received_list.topLevelItem(0)
-        check("a received snapshot shows who sent it, from its marker",
-              row is not None and row.text(1) == "laptop-a", row and row.text(1))
-        check("...and its size", row is not None and row.text(2) == "2.0 KB", row and row.text(2))
+        home = win.home
+        rows = _rows(home.received)
+        check("a received snapshot shows who sent it, from its marker, and its size",
+              len(rows) == 1 and "laptop-a" in rows[0] and "2.0 KB" in rows[0], rows)
         check("free space is shown under 쓴 공간",
-              win.stat_space["detail"].text().startswith("남은 공간"), win.stat_space["detail"].text())
-        check("a silent sender raises the banner, saying how often it should come",
-              win.silence_banner.isVisible() and "laptop-a" in win.silence_title.text()
-              and "하루에 한 번" in win.silence_detail.text(), win.silence_detail.text())
-        check("the latest unpacked copy is named: when, from whom, how many folders",
-              win.latest_copy.text().startswith("마지막으로 확인된 복사본")
-              and "laptop-a" in win.latest_copy.text(), win.latest_copy.text())
-        win.silence_ack.click()
+              home.stat_space.detail.text().startswith("남은 공간"), home.stat_space.detail.text())
+        check("a silent sender leads the verdict, saying how often it should come",
+              "laptop-a" in home.verdict.title.text() and "3일째" in home.verdict.title.text()
+              and "하루에 한 번" in home.verdict.sub.text(),
+              (home.verdict.title.text(), home.verdict.sub.text()))
+        check("...with 확인했어요 beside it", home.ack_btn.isVisible())
+        check("보내는 컴퓨터 tile counts the quiet one", "1대 소식 없음" in home.stat_senders.detail.text(),
+              home.stat_senders.detail.text())
+        home.ack_btn.click()
         win._refresh_receiver_stats()
-        check("확인했어요 hides the banner, and the next refresh keeps it hidden",
-              not win.silence_banner.isVisible())
-        check("...but the verdict still says a computer is not coming",
-              "오지 않는 컴퓨터" in win.verdict.text(), win.verdict.text())
+        check("확인했어요 clears the warning, and the next refresh keeps it cleared",
+              not home.ack_btn.isVisible() and home.verdict.title.text() == "잘 되고 있어요",
+              home.verdict.title.text())
+        check("...but the tile still says a computer is not coming",
+              "1대 소식 없음" in home.stat_senders.detail.text())
         win.close()
 
 
 def test_sender_home(app: QApplication, root: Path) -> None:
-    section("Sender home (design 5b): verdict, folder summary, history")
+    section("Sender home (§09): verdict, folder summary, history, error view")
     from tsbackup import history
     from tsbackup.engine_core import RunResult as _RR
 
@@ -160,37 +180,37 @@ def test_sender_home(app: QApplication, root: Path) -> None:
     cfg.sender.taildrop_targets = ["recv-1", "recv-2"]
     hist = conf / history.FILENAME
     history.record(hist, _RR(False, "a.7z", detail="연결 실패"), 3)
-    history.record(hist, _RR(True, "PycharmProjects_2026_10_08_04_00.7z", 2048, 1, "taildrop"), 132)
+    history.record(hist, _RR(True, "PycharmProjects_2026_10_08_04_00.7z", 2048, 1, "taildrop", "recv-2"), 132)
 
     with patch("app.main_window.config_dir", return_value=conf):
         win = MainWindow(cfg, log, engine, lambda: None)
-        check("the last run's verdict leads the status card - 보냈어요, not a "
-              "claim the far side unpacked it, so not the blue success colour",
-              win.verdict.text() == "✓ 보냈어요" and "color" not in win.verdict.styleSheet(),
-              (win.verdict.text(), win.verdict.styleSheet()))
-        check("...with the whole pass's time, in words",
-              "2분 12초 걸렸어요" in win.status_detail.text(), win.status_detail.text())
+        home = win.home
+        check("the last good run leads: 잘 되고 있어요, with size and time in words",
+              home.verdict.title.text() == "잘 되고 있어요" and "2.0 KB" in home.verdict.sub.text()
+              and "2분 12초" in home.verdict.sub.text(), home.verdict.sub.text())
+        rows = _rows(home.history_card)
         check("지난 전송 lists runs newest first",
-              win.history_list.topLevelItemCount() == 2
-              and win.history_list.topLevelItem(1).text(2).startswith("✗"),
-              [win.history_list.topLevelItem(i).text(2) for i in range(win.history_list.topLevelItemCount())])
-        check("받는 컴퓨터 counts its targets", win.sender_targets_title.text() == "받는 컴퓨터 2대",
-              win.sender_targets_title.text())
-        check("the home screen does not name the transport",
-              "taildrop" not in win.sender_targets_label.text()
-              and "taildrop" not in win.history_list.topLevelItem(0).text(2))
-        deadline = time.time() + 10
-        while "세는 중" in win.sender_folder_summary.text() and time.time() < deadline:
-            app.processEvents()
-            time.sleep(0.02)
+              len(rows) == 2 and "1곳으로 건너갔어요" in rows[0] and "건너가지 못했어요" in rows[1], rows)
+        check("받는 컴퓨터 counts its targets", home.targets_title.text() == "받는 컴퓨터 2대",
+              home.targets_title.text())
+        shown = " ".join(" ".join(r) for r in rows)
+        check("the home screen does not name the transport", "taildrop" not in shown, shown)
+        _wait(app, lambda: "세는 중" not in home.folder_summary.text())
         check("the folder summary is filled in off the GUI thread",
-              win.sender_folder_summary.text() == "2개 폴더 · 4.0 KB · 하루에 한 번",
-              win.sender_folder_summary.text())
+              home.folder_summary.text() == "2개 폴더 · 4.0 KB · 하루에 한 번", home.folder_summary.text())
+
+        history.record(hist, _RR(False, "b.7z", detail="taildrop: 닿지 못했습니다"), 5)
+        home.refresh()
+        check("a failed last run switches to the error view (§09 오류)",
+              home.views.currentIndex() == 1 and home.err_verdict.title.text() == "건너가지 못했어요")
+        check("...naming the receiver it could not reach, not the transport",
+              "recv-1" in home.err_verdict.sub.text() and "taildrop" not in home.err_verdict.sub.text(),
+              home.err_verdict.sub.text())
         win.close()
 
 
 def test_role_switch_rebuild(app: QApplication, root: Path) -> None:
-    section("MainWindow rebuilds cleanly on a role switch (settings dialog path)")
+    section("MainWindow rebuilds cleanly on a role switch (settings path)")
     cfg, log, engine = _fresh(root, ROLE_SENDER)
     win = MainWindow(cfg, log, engine, lambda: None)
     cfg.role = ROLE_RECEIVER
@@ -204,32 +224,43 @@ def test_role_switch_rebuild(app: QApplication, root: Path) -> None:
         ok = False
         detail = str(exc)
     check("rebuild to receiver body raises nothing", ok, detail if not ok else "")
-    check("btn_run relabels for the new role", win.btn_run.text() == "지금 확인")
+    check("the header relabels for the new role", win.role_pill.text() == "받는 컴퓨터")
+    check("...and the receiver home replaced the sender one", isinstance(win.home, ReceiverHome))
     win.close()
 
 
+def test_settings_window(app: QApplication, root: Path) -> None:
+    section("SettingsWindow (§09 설정): saves as it changes")
+    from app.settings_window import SettingsWindow
+
+    cfg, log, engine = _fresh(root, ROLE_SENDER)
+    cfg.sender.source_dir = str(root)
+    cfg.sender.interval_minutes = 1440
+    win = SettingsWindow(cfg, log, engine, None)
+    check("sender settings: 백업 / 받는 컴퓨터 / 알림 / 나루 정보",
+          [win.nav.item(i).text() for i in range(win.nav.count())]
+          == ["백업", "받는 컴퓨터", "알림", "나루 정보"])
+    check("얼마나 자주 reads in words, with the clock time",
+          win.row_schedule.value.fullText() == "하루에 한 번, 새벽 4시", win.row_schedule.value.fullText())
+    win._set_flag("notify_failures", False)
+    check("a toggle is saved the moment it changes, no 저장 button",
+          AppConfig.load().notify_failures is False)
+    win.close()
+
+    cfg2, log2, engine2 = _fresh(root, ROLE_RECEIVER)
+    win2 = SettingsWindow(cfg2, log2, engine2, None)
+    check("receiver settings: 받기 / 보내는 컴퓨터 / 알림 / 나루 정보",
+          [win2.nav.item(i).text() for i in range(win2.nav.count())]
+          == ["받기", "보내는 컴퓨터", "알림", "나루 정보"])
+    win2.close()
+
+
 def test_settings_dialog(app: QApplication, root: Path) -> None:
-    section("SettingsDialog construction, disclosure toggle, apply_to round-trip")
+    section("고급 설정 (SettingsDialog): apply_to round-trip")
     cfg = AppConfig()
     dlg = SettingsDialog(cfg)
-    check("host_key field exists (Phase 1)", hasattr(dlg, "host_key"))
-    check("expects_http field exists (Phase 1)", hasattr(dlg, "expects_http"))
-
-    from PySide6.QtWidgets import QPushButton
-    toggles = [b for b in dlg.findChildren(QPushButton) if b.isCheckable()]
-    check("two advanced-section disclosure toggles exist (Phase 2)", len(toggles) == 2, toggles)
-
-    # A child widget's isVisible() only reflects the whole ancestor chain
-    # once the top-level window is actually shown - not just its own
-    # setVisible() flag - so show() first or this assertion is meaningless.
-    dlg.show()
-    check("host_key starts collapsed (advanced section closed by default)",
-          not dlg.host_key.isVisible())
-    for b in toggles:
-        b.setChecked(True)
-    check("host_key becomes visible once its disclosure is opened",
-          dlg.host_key.isVisible())
-
+    check("host_key field exists", hasattr(dlg, "host_key"))
+    check("expects_http field exists", hasattr(dlg, "expects_http"))
     dlg.host_key.setText("SHA256:abc123")
     dlg.expects_http.setChecked(True)
     dlg.apply_to(cfg)
@@ -252,16 +283,20 @@ def _dispose_tray(tray) -> None:
 
 
 def test_tray_signal_wiring(app: QApplication, root: Path) -> None:
-    section("Tray failure-notification wiring (Phase 1)")
+    section("Tray failure state (§09 트레이)")
     cfg, log, engine = _fresh(root, ROLE_SENDER)
     win = MainWindow(cfg, log, engine, lambda: None)
     tray = Tray(win, engine, lambda: None)
 
+    cfg.notify_failures = False   # no toast window in this test
     tray._on_failed_after_retries(RunResult(False, detail="스모크 테스트 실패"))
-    check("error flag sets on failed_after_retries", tray._error is True)
+    check("a failure after retries turns the menu header to 건너가지 못했어요",
+          tray.header.title.text() == "건너가지 못했어요", tray.header.title.text())
+    check("...and offers 지금 다시 보내기", tray.act_run.text() == "지금 다시 보내기")
 
     tray._on_run_result(RunResult(True))
-    check("error flag clears on the next successful run", tray._error is False)
+    check("the next successful run clears it",
+          tray.header.title.text() != "건너가지 못했어요" and tray.act_run.text() == "지금 보내기")
     _dispose_tray(tray)
     win.close()
 
@@ -304,50 +339,66 @@ def test_tray_update_check_action(app: QApplication, root: Path) -> None:
 
 
 def test_wizard(app: QApplication, root: Path) -> None:
-    section("SetupWizard construction and sender-path wiring (Phase 3)")
+    section("SetupWizard sender path (§09: role, code, folder, how often, test)")
     from app import wizard as wiz_module
 
     cfg = AppConfig()
     wiz = SetupWizard(cfg)
-    check("one question per page: role, ready, code | folder, how often, code, test",
-          wiz.stack.count() == 7)
-
-    wiz.role_sender.setChecked(True)
+    check("sender starts selected", wiz.role_sender.isSelected() and not wiz.role_receiver.isSelected())
     wiz._role_next()
-    check("choosing sender starts at the folder page",
-          wiz.stack.currentIndex() == wiz_module.PAGE_FOLDER)
-
-    wiz.source_edit.setText(str(root / "no-such-folder"))
-    check("다음 stays off for a folder that does not exist", not wiz.folder_next.isEnabled())
-    folder = root / "wiz_src"
-    folder.mkdir(exist_ok=True)
-    wiz.source_edit.setText(str(folder))
-    check("...and turns on for one that does", wiz.folder_next.isEnabled())
-    wiz._folder_next()
-    check("then how often", wiz.stack.currentIndex() == wiz_module.PAGE_SCHEDULE)
-    check("하루에 한 번 is the default", wiz._schedule_minutes() == 1440)
-    wiz._schedule_next()
-    check("the code comes last, after the interval is known",
-          wiz.stack.currentIndex() == wiz_module.PAGE_PAIR and cfg.sender.interval_minutes == 1440)
+    check("the code comes right after the role", wiz.stack.currentIndex() == wiz_module.PAGE_PAIR)
+    check("다음 stays off until a code connects", not wiz.pair_next.isEnabled())
 
     wiz.code_entry.setText("00000-0001")
     wiz._resolve_code()
     check("an unreachable code reports failure without crashing",
           "연결하지 못했어요" in wiz.pair_result.text(), wiz.pair_result.text())
-    check("...and stays on the code page", wiz.stack.currentIndex() == wiz_module.PAGE_PAIR)
+    check("...and stays on the code page with 다음 off",
+          wiz.stack.currentIndex() == wiz_module.PAGE_PAIR and not wiz.pair_next.isEnabled())
+
+    wiz._go(wiz_module.PAGE_FOLDER)
+    wiz.source_edit.setText(str(root / "no-such-folder"))
+    wiz._folder_changed()
+    check("다음 stays off for a folder that does not exist", not wiz.folder_next.isEnabled())
+    folder = root / "wiz_src"
+    (folder / "a").mkdir(parents=True, exist_ok=True)
+    wiz.source_edit.setText(str(folder))
+    wiz._folder_changed()
+    check("...and turns on for one that does", wiz.folder_next.isEnabled())
+    _wait(app, lambda: wiz.tile_dirs.value.text() not in ("…", "-"))
+    check("the folder tiles count it", wiz.tile_dirs.value.text() == "1개", wiz.tile_dirs.value.text())
+    wiz._folder_next()
+    check("then how often", wiz.stack.currentIndex() == wiz_module.PAGE_SCHEDULE)
+    check("하루에 한 번 is the default", wiz._schedule_minutes() == 1440)
 
     wiz._cleanup()
 
 
-def test_wizard_ready_page(app: QApplication, root: Path) -> None:
-    section("SetupWizard receiver: the readiness page checks Tailscale first")
+def test_wizard_test_page(app: QApplication, root: Path) -> None:
+    section("SetupWizard test page: the verdict and the next send time")
+    from app import wizard as wiz_module
+
+    wiz = SetupWizard(AppConfig())
+    wiz._go(wiz_module.PAGE_TEST)
+    wiz._on_test_finished(True, "")
+    check("success says 잘 건너갔어요 and when the next send is",
+          wiz.test_page.title_label.text() == "잘 건너갔어요"
+          and wiz.test_page.sub_label.text().startswith("다음 전송은"), wiz.test_page.sub_label.text())
+    check("...and the button becomes 마침", wiz.test_finish.text() == "마침" and wiz.test_finish.isEnabled())
+    wiz._on_test_finished(False, "받는 컴퓨터에 닿지 못했어요.")
+    check("failure offers 다시 해 보기", wiz.test_finish.text() == "다시 해 보기")
+    wiz._cleanup()
+
+
+def test_wizard_tailscale_off(app: QApplication, root: Path) -> None:
+    section("SetupWizard receiver: Tailscale off is said plainly")
     with patch("tsbackup.pairing.local_tailscale_ip", lambda: None):
         wiz = SetupWizard(AppConfig())
-        wiz.role_receiver.setChecked(True)
+        wiz._pick_role(ROLE_RECEIVER)
         wiz._role_next()
-        check("Tailscale off: says so and 다음 stays off",
-              not wiz.ready_next.isEnabled() and "Tailscale" in wiz.ready_status.text(),
-              wiz.ready_status.text())
+        check("no code, a message naming Tailscale, and 마침 off",
+              "Tailscale" in wiz.pair_status.text.text() and not wiz.receiver_finish.isEnabled(),
+              wiz.pair_status.text.text())
         wiz._cleanup()
 
 
@@ -374,9 +425,8 @@ def test_wizard_receiver_page(app: QApplication, root: Path) -> None:
     with _no_real_bind("100.90.1.2"):
         cfg = AppConfig()
         wiz = SetupWizard(cfg)
-        wiz.role_receiver.setChecked(True)
+        wiz._pick_role(ROLE_RECEIVER)
         wiz._role_next()
-        wiz._ready_next()
         check("a code is shown on the receiver page", bool(wiz.code_label.text()))
         check("마침 starts disabled - pairing hasn't happened yet",
               not wiz.receiver_finish.isEnabled())
@@ -396,7 +446,7 @@ def test_wizard_receiver_page(app: QApplication, root: Path) -> None:
         check("마침 stays disabled when paired but not yet confirmed",
               not wiz.receiver_finish.isEnabled())
         check("status reflects waiting for the sender's test-transfer",
-              "기다리고" in wiz.pair_status.text(), wiz.pair_status.text())
+              "기다리고" in wiz.pair_status.text.text(), wiz.pair_status.text.text())
 
         wiz._listener._session.confirmed = True
         wiz._poll_paired()
@@ -418,9 +468,8 @@ def test_wizard_receiver_expiry_escape_hatch(app: QApplication, root: Path) -> N
         # first or the visibility checks below are meaningless (see the
         # same note on SettingsDialog's test above).
         wiz.show()
-        wiz.role_receiver.setChecked(True)
+        wiz._pick_role(ROLE_RECEIVER)
         wiz._role_next()
-        wiz._ready_next()
 
         check("escape hatch is hidden while a code is still fresh",
               not wiz.receiver_finish_anyway.isVisible())
@@ -429,17 +478,17 @@ def test_wizard_receiver_expiry_escape_hatch(app: QApplication, root: Path) -> N
             time.time() - pairing_module.CODE_TTL_SECONDS - 1)
         wiz._poll_paired()
         check("status shows expiry once the code's TTL passes unconfirmed",
-              "만료" in wiz.pair_status.text(), wiz.pair_status.text())
+              "만료" in wiz.pair_status.text.text(), wiz.pair_status.text.text())
         check("시험 없이 마침 escape hatch becomes visible on expiry",
               wiz.receiver_finish_anyway.isVisible())
 
-        with patch("app.wizard.QMessageBox.warning",
+        with patch("PySide6.QtWidgets.QMessageBox.question",
                    return_value=QMessageBox.StandardButton.No):
             wiz._finish_without_confirm()
         check("declining the warning does not close the wizard",
               wiz.result() != QDialog.DialogCode.Accepted)
 
-        with patch("app.wizard.QMessageBox.warning",
+        with patch("PySide6.QtWidgets.QMessageBox.question",
                    return_value=QMessageBox.StandardButton.Yes):
             wiz._finish_without_confirm()
         check("accepting the warning finishes the wizard despite no confirm",
@@ -460,9 +509,8 @@ def test_wizard_close_routes_through_reject(app: QApplication, root: Path) -> No
         # vacuously without actually exercising the close path. show()
         # first so the check below proves something real.
         wiz.show()
-        wiz.role_receiver.setChecked(True)
+        wiz._pick_role(ROLE_RECEIVER)
         wiz._role_next()
-        wiz._ready_next()
         check("listener is bound while the wizard is open",
               wiz._listener is not None)
 
@@ -547,11 +595,13 @@ def main() -> int:
         test_receiver_home(app, root)
         test_sender_home(app, root)
         test_role_switch_rebuild(app, root)
+        test_settings_window(app, root)
         test_settings_dialog(app, root)
         test_tray_signal_wiring(app, root)
         test_tray_update_check_action(app, root)
         test_wizard(app, root)
-        test_wizard_ready_page(app, root)
+        test_wizard_test_page(app, root)
+        test_wizard_tailscale_off(app, root)
         test_wizard_receiver_page(app, root)
         test_wizard_receiver_expiry_escape_hatch(app, root)
         test_wizard_close_routes_through_reject(app, root)
