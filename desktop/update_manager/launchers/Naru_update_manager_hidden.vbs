@@ -1,4 +1,4 @@
-' TsBackup update manager - hidden launcher for the Startup-folder shortcut
+' Naru update manager - hidden launcher for the Startup-folder shortcut
 ' and the one-time post-install [Run] line.
 ' WScript.Shell Run window-style 0 = fully hidden (no black console flash).
 Option Explicit
@@ -7,7 +7,7 @@ Dim sh, fso, dir, exe, args, i, cmd
 Set fso = CreateObject("Scripting.FileSystemObject")
 Set sh = CreateObject("WScript.Shell")
 dir = fso.GetParentFolderName(WScript.ScriptFullName)
-exe = dir & "\TsBackup_update_manager.exe"
+exe = dir & "\Naru_update_manager.exe"
 ' Do not fall back to .bat here - bat re-enters this VBS (loop risk).
 
 args = ""

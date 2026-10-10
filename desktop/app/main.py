@@ -187,7 +187,7 @@ def _gui() -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="TS Backup")
+    parser = argparse.ArgumentParser(description="나루")
     parser.add_argument("--run", action="store_true", help="한 번 압축·전송 후 종료")
     parser.add_argument("--scan", action="store_true", help="수신 폴더를 한 번 처리 후 종료")
     parser.add_argument("--config", help="설정 파일 경로 표시", action="store_true")

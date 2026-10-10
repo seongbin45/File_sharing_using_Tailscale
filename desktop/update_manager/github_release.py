@@ -1,5 +1,5 @@
-"""Fetch latest GitHub release metadata (the raw TsBackup.exe asset only -
-never TsBackup-Setup.exe, which would pop the Inno wizard)."""
+"""Fetch latest GitHub release metadata (the raw Naru.exe asset only -
+never Naru-Setup.exe, which would pop the Inno wizard)."""
 
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ def _ssl_context() -> ssl.SSLContext:
 
 def fetch_latest_release(*, etag: str | None = None) -> LatestRelease | None:
     """
-    Return latest release with the TsBackup.exe asset, or None if
+    Return latest release with the Naru.exe asset, or None if
     unchanged / unavailable.
 
     Raises nothing for network errors - returns None and logs.

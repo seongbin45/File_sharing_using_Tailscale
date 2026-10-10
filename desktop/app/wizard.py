@@ -359,7 +359,7 @@ class SetupWizard(QDialog):
     def _folder_next(self) -> None:
         self.cfg.sender.source_dir = self.source_edit.text().strip()
         if not self.cfg.sender.work_dir:
-            self.cfg.sender.work_dir = str(Path(tempfile.gettempdir()) / "TsBackupWork")
+            self.cfg.sender.work_dir = str(Path(tempfile.gettempdir()) / "NaruWork")
         self._go(PAGE_SCHEDULE)
 
     # -------------------------------------------- sender 3 · how often
@@ -520,9 +520,9 @@ class SetupWizard(QDialog):
             return
         r = self.cfg.receiver
         if not r.incoming_dir:
-            r.incoming_dir = str(Path.home() / "Downloads" / "TsBackupIncoming")
+            r.incoming_dir = str(Path.home() / "Downloads" / "NaruIncoming")
         if not r.unpack_dir:
-            r.unpack_dir = str(Path.home() / "TsBackupUnpacked")
+            r.unpack_dir = str(Path.home() / "NaruUnpacked")
         Path(r.incoming_dir).mkdir(parents=True, exist_ok=True)
         Path(r.unpack_dir).mkdir(parents=True, exist_ok=True)
         if self._listener is None:

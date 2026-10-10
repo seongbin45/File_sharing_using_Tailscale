@@ -4,7 +4,7 @@ mean re-downloading from scratch once the window finally closes).
 
 Much smaller than CloneUp's pending.py: there is no zip to extract, no
 onedir root to find, and no reparse-point/junction handling for a
-multi-file tree - just one staged TsBackup.exe with an idle-cache check
+multi-file tree - just one staged Naru.exe with an idle-cache check
 so an already-verified download isn't re-hashed every 10-minute tick."""
 
 from __future__ import annotations

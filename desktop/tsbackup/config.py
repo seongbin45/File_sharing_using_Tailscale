@@ -6,7 +6,7 @@ sending and receiving halves drift apart.
 
 The file lives next to the user's data, not next to the .exe: a PyInstaller
 build is often dropped in Program Files, which a normal account cannot write
-to. %LOCALAPPDATA%\\TsBackup on Windows, ~/.config/tsbackup elsewhere.
+to. %LOCALAPPDATA%\\Naru on Windows, ~/.config/tsbackup elsewhere.
 """
 
 from __future__ import annotations
@@ -20,11 +20,11 @@ from pathlib import Path
 def config_dir() -> Path:
     base = os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_CONFIG_HOME")
     if base:
-        return Path(base) / "TsBackup"
+        return Path(base) / "Naru"
     return Path.home() / ".config" / "tsbackup"
 
 
-CONFIG_PATH = Path(os.environ.get("TSBACKUP_CONFIG", config_dir() / "config.json"))
+CONFIG_PATH = Path(os.environ.get("NARU_CONFIG", config_dir() / "config.json"))
 
 ROLE_SENDER = "sender"
 ROLE_RECEIVER = "receiver"

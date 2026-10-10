@@ -1,4 +1,4 @@
-"""TsBackup Update Manager - independent of the TsBackup GUI app.
+"""Naru Update Manager - independent of the Naru GUI app.
 
 Ported from seongbin45/CloneUp's update_manager/ package, trimmed to what
 a single-user, onefile-exe, dual-privilege (admin or per-user) install

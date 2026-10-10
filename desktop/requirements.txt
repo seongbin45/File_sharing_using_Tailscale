@@ -7,3 +7,4 @@ requests==2.33.1
 
 # Build-time only.
 pyinstaller==6.16.0
+Pillow==12.3.0

@@ -1,7 +1,7 @@
 """Windows를 켤 때 나루도 켜기 - the per-user Startup shortcut.
 
-The installer creates {userstartup}\\TsBackup.lnk when its "Windows 시작 시
-자동 실행" task is ticked (build/tsbackup.iss); this module reads and toggles
+The installer creates {userstartup}\\Naru.lnk when its "Windows 시작 시
+자동 실행" task is ticked (build/naru.iss); this module reads and toggles
 that same file, so the setting and the installer never disagree.
 """
 
@@ -12,7 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-LINK_NAME = "TsBackup.lnk"
+LINK_NAME = "Naru.lnk"
 
 
 def startup_dir() -> Path:

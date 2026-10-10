@@ -1,4 +1,4 @@
-"""Detect TsBackup's main window; kill TsBackup.exe process tree (never
+"""Detect Naru's main window; kill Naru.exe process tree (never
 the update manager itself)."""
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ log = logging.getLogger("tsbackup_update_manager")
 
 def main_window_visible() -> bool:
     """True if a visible top-level window titled exactly MAIN_WINDOW_TITLE
-    exists. The wizard's "TS Backup 설정" dialog does not match this and
+    exists. The wizard's "나루 설정" dialog does not match this and
     is not treated as "the app is open" - it's mandatory-first-run only
     and never coexists with an update tick worth deferring for."""
     if sys.platform != "win32":
@@ -60,10 +60,10 @@ def _create_no_window_flags() -> int:
 
 def kill_tsbackup_processes(*, wait_sec: float = 30.0) -> bool:
     """
-    Force-stop TsBackup.exe and its children. Never targets the update
+    Force-stop Naru.exe and its children. Never targets the update
     manager itself.
 
-    Returns True if no TsBackup.exe remains (or none existed).
+    Returns True if no Naru.exe remains (or none existed).
     """
     if sys.platform != "win32":
         return True
@@ -91,12 +91,12 @@ def kill_tsbackup_processes(*, wait_sec: float = 30.0) -> bool:
         time.sleep(0.4)
     still = _tsbackup_exe_running()
     if still:
-        log.error("TsBackup.exe still running after kill wait")
+        log.error("Naru.exe still running after kill wait")
     return not still
 
 
 def _tsbackup_exe_running() -> bool:
-    """True if TsBackup.exe appears in tasklist. Uses raw bytes (not
+    """True if Naru.exe appears in tasklist. Uses raw bytes (not
     text=True): a Korean-locale Windows tasklist is cp949 and UTF-8
     decoding can raise, which would otherwise make the kill-wait exit
     early on a false "not running" read."""
@@ -119,9 +119,9 @@ def _tsbackup_exe_running() -> bool:
 
 def is_tray_autostart_registered() -> bool:
     """Whether the *main app's* own login-autostart is on - the Startup-
-    folder shortcut tsbackup.iss's [Icons] "startupicon" task creates
+    folder shortcut naru.iss's [Icons] "startupicon" task creates
     (Name: "{userstartup}\\{#MyAppName}"), not this update manager's own
-    autostart shortcut. Used to decide whether to relaunch TsBackup after
+    autostart shortcut. Used to decide whether to relaunch Naru after
     applying an update - if the person never asked for autostart, don't
     add a tray icon they didn't have running before."""
     if sys.platform != "win32":
@@ -129,12 +129,12 @@ def is_tray_autostart_registered() -> bool:
     appdata = os.environ.get("APPDATA")
     if not appdata:
         return False
-    shortcut = Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "TsBackup.lnk"
+    shortcut = Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "Naru.lnk"
     return shortcut.is_file()
 
 
 def restart_tsbackup_tray(install_dir: Path) -> None:
-    """Relaunch TsBackup plain, no CLI flags - unlike CloneUp, this app has
+    """Relaunch Naru plain, no CLI flags - unlike CloneUp, this app has
     no --tray switch. A bare launch already reproduces exactly what the
     Startup-folder shortcut does on a normal login: it goes straight to
     _gui(), and cfg.minimize_to_tray (the user's own saved preference)
@@ -151,6 +151,6 @@ def restart_tsbackup_tray(install_dir: Path) -> None:
             creationflags=flags,
             close_fds=True,
         )
-        log.info("restarted TsBackup")
+        log.info("restarted Naru")
     except Exception as e:
         log.warning("restart failed: %s", e)

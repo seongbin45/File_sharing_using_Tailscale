@@ -41,7 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # at import - otherwise a test run overwrites the developer's real config.
 _SANDBOX = tempfile.mkdtemp(prefix="tsbackup_gui_smoke_")
 os.environ["LOCALAPPDATA"] = _SANDBOX
-os.environ["TSBACKUP_CONFIG"] = str(Path(_SANDBOX) / "TsBackup" / "config.json")
+os.environ["NARU_CONFIG"] = str(Path(_SANDBOX) / "Naru" / "config.json")
 
 from PySide6.QtWidgets import QApplication, QDialog, QLabel, QMessageBox  # noqa: E402
 
@@ -317,7 +317,7 @@ def test_tray_update_check_action(app: QApplication, root: Path) -> None:
 
     fake_install = root / "fake_install"
     fake_install.mkdir(exist_ok=True)
-    fake_um_exe = fake_install / "TsBackup_update_manager.exe"
+    fake_um_exe = fake_install / "Naru_update_manager.exe"
     fake_um_exe.write_bytes(b"stub")
     with patch("app.tray.find_tsbackup_install_dir", return_value=fake_install):
         check("install dir found with the exe present -> resolved",

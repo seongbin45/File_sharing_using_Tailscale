@@ -537,6 +537,60 @@ CI(깨끗한 Windows 러너)에서는 통과합니다. 따로 떼어 같은 함�
 
 ---
 
+### 2026-10-10 후속 — 빌드 산출물 이름을 나루/Naru 로 전면 교체, 아이콘 번들
+
+화면 UI는 이미 "나루"였지만, `.exe`/설치 파일/설정 폴더/환경변수 이름은 업데이트
+경로를 지키려고 `TsBackup` 그대로 남겨 두었던 결정(`desktop/README.md`)을 뒤집고,
+파일/경로 성격의 모든 이름을 ASCII `Naru` 로, 사용자에게 보이는 텍스트는 Korean
+`나루` 로 통일했습니다. `build/naru.iss`, `update_manager/*.py`, `tsbackup/config.py`,
+`app/{single_instance,startup,wizard,main}.py`, `tsbackup/transports/sftp.py`,
+`.github/workflows/desktop-release.yml`, 테스트 픽스처까지 전부 포함합니다.
+
+**받는 영향 — 이미 설치된 `v0.3.1`은 자동 업데이트로 이 변경을 받지 못합니다.**
+`update_manager/config.py`의 `ASSET_NAME`이 `TsBackup.exe`에서 `Naru.exe`로
+바뀌어, 기존 설치의 업데이트 매니저가 더 이상 릴리스 자산을 찾지 못합니다
+(의도된 결정 — 사용자 확인). 기존 설치가 있는 PC는 새 `Naru-Setup.exe`를 받아
+수동으로 **제자리 업그레이드**해야 하며, 그 업그레이드 경로 자체가 이번 작업에서
+가장 신경 쓴 부분입니다: Inno Setup 의 제자리 업그레이드(AppId 불변)는 새
+스크립트에 없는 옛 파일/바로가기를 자동으로 지우지 않으므로, `naru.iss`에
+`[InstallDelete]` 섹션(옛 `TsBackup.exe`/`TsBackup_update_manager.*`/시작
+폴더 바로가기 삭제)과 옛 방화벽 규칙(`"TsBackup Pairing"`) 삭제 줄을 추가했습니다
+— 이게 없으면 업그레이드 뒤 로그인할 때 옛 버전과 새 버전이 동시에 떠서 수신
+포트를 두고 경쟁하는 실제 프로세스 버그가 생깁니다.
+
+**덤으로 발견해 고친 버그 두 개**(이 재명명과 독립적으로 이미 존재하던 결함):
+- `update_manager/config.py`의 `MAIN_WINDOW_TITLE`이 실제 창 제목(`나루`)과
+  UI 재명명 이후 한 번도 맞은 적이 없었습니다 — `main_window_visible()`이
+  항상 `False`를 반환해, 앱 창이 열려 있어도 업데이트를 미룬 적이 없었습니다.
+- `update_manager/apply.py`의 `install_staged_exe`/`apply_exe_update`가
+  `TSBACKUP_EXE_NAME` 상수 대신 `"TsBackup.exe"` 리터럴을 직접 하드코딩하고
+  있어, 상수의 값만 바꿔서는 실제 교체 로직이 따라가지 못했을 것입니다.
+
+**아이콘**: `app/icons.py`가 코드로 그리는 로고(§03, 디자인 문서와 대조 확인)를
+`build/make_icon.py`(신규)가 Pillow 로 16/20/24/32/48/64/256px 전부가 담긴
+`dist/naru.ico` 로 렌더링하고, 두 `.spec` 파일의 `icon=`과 `naru.iss`의
+`SetupIconFile`이 그 파일을 Windows 리소스로 박아 넣습니다. Pillow 의 ICO 저장은
+가장 큰 이미지를 기준(base)으로 넘겨야 모든 크기가 보존된다는 것을 이 샌드박스에서
+합성 이미지로 직접 확인했고, 실제로 `make_icon.py`를 돌려 7개 크기가 모두
+개별 프레임으로 들어간 `.ico`를 만들어 확인했습니다 (`QT_QPA_PLATFORM=offscreen`,
+디스플레이 없이).
+
+자동 테스트(이 샌드박스, Linux, 화면 없이 `QT_QPA_PLATFORM=offscreen`):
+`selftest` · `test_update_manager` · `gui_smoke` 전부 통과. 아직 검증 안 된 것:
+
+- 실제 Windows 에서 `naru.iss`로 인스톨러를 빌드하고, 설치/제자리 업그레이드가
+  정말로 이 섹션에서 말한 대로 동작하는지(특히 옛 `v0.3.1` 설치 위에 새
+  인스톨러를 덮어 설치한 뒤, 재부팅/재로그인 후 작업 관리자에 `Naru.exe`와
+  `Naru_update_manager.exe`가 정확히 하나씩만 떠 있는지, 옛 방화벽 규칙이
+  사라졌는지)
+- 설치된 `.exe`/`Naru-Setup.exe`의 Explorer·taskbar·Alt-Tab 아이콘이 실제로
+  나루 로고로 보이는지(이 샌드박스는 디스플레이가 없어 렌더링 결과만 파일로
+  확인했습니다)
+- GitHub Actions 의 Windows 러너에서 `make_icon.py` → 두 `.spec` → `naru.iss`
+  전체 체인이 그대로 돌아가는지
+
+---
+
 ## 검증 절차 — 고친 뒤 무엇을 돌릴 것인가
 
 ### 자동 (매번, 배포 전 필수)

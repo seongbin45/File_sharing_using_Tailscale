@@ -1,4 +1,4 @@
-"""File-only logging (no UI). Same %LOCALAPPDATA%\\TsBackup directory
+"""File-only logging (no UI). Same %LOCALAPPDATA%\\Naru directory
 tsbackup/config.py's config_dir() already uses for the main app's own log
 and config.json - not a separate logs/ subfolder, matching that
 convention rather than CloneUp's own."""
@@ -14,7 +14,7 @@ from pathlib import Path
 def log_dir() -> Path:
     base = os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_CONFIG_HOME")
     if base:
-        d = Path(base) / "TsBackup"
+        d = Path(base) / "Naru"
     else:
         d = Path.home() / ".config" / "tsbackup"
     d.mkdir(parents=True, exist_ok=True)

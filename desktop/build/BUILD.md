@@ -1,15 +1,15 @@
-# TsBackup 빌드
+# 나루 (Naru) 빌드
 
-두 단계입니다: PyInstaller 로 `TsBackup.exe` 를 만들고, Inno Setup 으로 그걸
-`TsBackup-Setup.exe` 설치 파일로 감쌉니다(`build/tsbackup.iss`). 릴리스에
-올라가는 건 후자뿐입니다 — 둘 다 **Windows 에서** 만들어야 합니다. PyInstaller
-산출물은 OS 별이라 Linux 에서 돌리면 Linux ELF 가 나오고, Inno Setup 은 애초에
-Windows 전용 도구입니다.
+세 단계입니다: `build/make_icon.py` 로 `naru.ico` 를 만들고, PyInstaller 로
+`Naru.exe` 를 만들고, Inno Setup 으로 그걸 `Naru-Setup.exe` 설치 파일로
+감쌉니다(`build/naru.iss`). 릴리스에 올라가는 건 마지막뿐입니다 — 모두
+**Windows 에서** 만들어야 합니다. PyInstaller 산출물은 OS 별이라 Linux 에서
+돌리면 Linux ELF 가 나오고, Inno Setup 은 애초에 Windows 전용 도구입니다.
 
 두 가지 길이 있습니다.
 
 - **자동(권장)** — `vX.Y.Z` 태그를 푸시하면 GitHub Actions 의 Windows 러너가
-  둘 다 빌드해 같은 태그의 릴리스에 `TsBackup-Setup.exe` 를 첨부합니다. 아래
+  모두 빌드해 같은 태그의 릴리스에 `Naru-Setup.exe` 를 첨부합니다. 아래
   "릴리스" 참고.
 - **로컬** — 손에 Windows 가 있을 때. 아래 "로컬 빌드".
 
@@ -24,19 +24,21 @@ cd desktop
 python -m venv .venv
 .venv\Scripts\python -m pip install --upgrade pip
 .venv\Scripts\python -m pip install -r requirements.txt
+.venv\Scripts\python build\make_icon.py
 .venv\Scripts\pyinstaller build\tsbackup.spec
 ```
 
-결과물은 `desktop\dist\TsBackup.exe` (단일 파일). 스펙은 `desktop\` 에서 실행하는
-것을 전제로 `pathex` 를 `os.getcwd()` 로 잡습니다 — 반드시 `desktop\` 안에서
-`pyinstaller build\tsbackup.spec` 를 부르십시오.
+`make_icon.py` 가 먼저 `dist\naru.ico` 를 만들어야 합니다 — 스펙의 `icon=` 이
+그 파일을 찾습니다. 결과물은 `desktop\dist\Naru.exe` (단일 파일). 스펙은
+`desktop\` 에서 실행하는 것을 전제로 `pathex` 를 `os.getcwd()` 로 잡습니다 —
+반드시 `desktop\` 안에서 `pyinstaller build\tsbackup.spec` 를 부르십시오.
 
 빌드가 끝나면 그 자리에서 확인:
 
 ```cmd
-dist\TsBackup.exe --config     :: 설정 파일 경로가 찍히면 임포트·번들 정상
-dist\TsBackup.exe --check-gui  :: GUI 쪽 임포트만 검사 (창은 안 뜸) - CI 도 이걸로 확인
-dist\TsBackup.exe              :: GUI 가 뜨는지
+dist\Naru.exe --config     :: 설정 파일 경로가 찍히면 임포트·번들 정상
+dist\Naru.exe --check-gui  :: GUI 쪽 임포트만 검사 (창은 안 뜸) - CI 도 이걸로 확인
+dist\Naru.exe              :: GUI 가 뜨는지
 ```
 
 ---
@@ -48,29 +50,30 @@ Actions 러너에는 이미 깔려 있지만, 로컬 PC 에는 따로 설치해�
 후 `iscc` 가 PATH 에 없으면 전체 경로로 부르십시오
 (보통 `C:\Program Files (x86)\Inno Setup 6\ISCC.exe`).
 
-위의 PyInstaller 빌드로 `dist\TsBackup.exe` 를 먼저 만든 다음:
+위의 PyInstaller 빌드로 `dist\Naru.exe` 를 먼저 만든 다음(`naru.ico` 도
+이미 있어야 합니다 - `SetupIconFile` 이 그걸 찾습니다):
 
 ```cmd
-iscc /DMyAppVersion=0.1.1 build\tsbackup.iss
+iscc /DMyAppVersion=0.1.1 build\naru.iss
 ```
 
-결과물은 `desktop\dist\TsBackup-Setup.exe`. `MyAppVersion` 을 안 주면
-`tsbackup.iss` 의 기본값 `0.0.0` 이 들어갑니다 — 로컬 확인용으로는 무해하지만
+결과물은 `desktop\dist\Naru-Setup.exe`. `MyAppVersion` 을 안 주면
+`naru.iss` 의 기본값 `0.0.0` 이 들어갑니다 — 로컬 확인용으로는 무해하지만
 실제 릴리스에 쓸 거라면 버전을 맞춰 주십시오.
 
 빌드가 끝나면 CI 와 같은 방식으로 설치까지 확인:
 
 ```cmd
-dist\TsBackup-Setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CURRENTUSER
-%LOCALAPPDATA%\Programs\TsBackup\TsBackup.exe --config
-%LOCALAPPDATA%\Programs\TsBackup\TsBackup.exe --check-gui
+dist\Naru-Setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CURRENTUSER
+%LOCALAPPDATA%\Programs\Naru\Naru.exe --config
+%LOCALAPPDATA%\Programs\Naru\Naru.exe --check-gui
 ```
 
 (`/CURRENTUSER` 는 관리자 권한 없이 도는 조용한 설치입니다 — 대화형으로
 "나만 설치할지 / 모든 사용자로 설치할지" 화면을 직접 보려면 그냥
-`dist\TsBackup-Setup.exe` 를 인자 없이 실행하십시오.)
+`dist\Naru-Setup.exe` 를 인자 없이 실행하십시오.)
 
-`tsbackup.iss` 의 `AppId` 는 한 번 정해서 고정한 GUID입니다 — 절대 바꾸지
+`naru.iss` 의 `AppId` 는 한 번 정해서 고정한 GUID입니다 — 절대 바꾸지
 마십시오. 바꾸면 다음 버전이 Windows 입장에서 "다른 앱"이 되어 제자리 업그레이드
 대신 중복 설치·중복 제거 항목이 생깁니다.
 
@@ -88,17 +91,19 @@ dist\TsBackup-Setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CURRENTUSER
 - **UPX 관련 경고/실패** — 스펙은 `upx=True` 입니다. 러너/PC 에 UPX 가 없으면
   PyInstaller 가 압축을 건너뛰고 경고만 남깁니다(빌드는 됨). 문제가 되면
   스펙에서 `upx=False`.
-- **아이콘 파일을 못 찾음** — 없습니다. 아이콘은 `app/icons.py` 가 코드로
-  그리므로 번들할 `.ico/.png` 가 없고, `--onefile` 임시 폴더 경로 문제도
-  생기지 않습니다.
+- **아이콘 파일을 못 찾음(`dist\naru.ico`)** — `build\make_icon.py` 를 먼저
+  돌려야 합니다. 앱 자체의 창/트레이 아이콘은 `app/icons.py` 가 코드로
+  그려 런타임엔 아무 파일도 필요 없지만, `naru.ico` 는 그와는 별개로
+  PyInstaller(`icon=`)/Inno Setup(`SetupIconFile`)이 .exe 의 Windows
+  리소스에 박아 넣는 빌드 전용 산출물입니다.
 - **바이너리가 큼(수십 MB)** — 정상입니다. PySide6(Qt) 를 통째로 담습니다.
   스펙의 `excludes` 가 안 쓰는 Qt 모듈을 덜어냅니다. 무언가 임포트에 실패하면
   해당 항목을 `excludes` 에서 빼십시오.
 - **`'iscc' 은(는) 내부 또는 외부 명령이 아닙니다`** — Inno Setup 은 설치해도
   기본적으로 PATH 에 안 잡힙니다. 전체 경로로 부르십시오:
-  `"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" build\tsbackup.iss`.
+  `"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" build\naru.iss`.
 - **설치 후 스모크 테스트에서 `installed exe not found`** — `/CURRENTUSER` 조용
-  설치가 실패했거나 경로가 다른 경우입니다. 인자 없이 `dist\TsBackup-Setup.exe`
+  설치가 실패했거나 경로가 다른 경우입니다. 인자 없이 `dist\Naru-Setup.exe`
   를 대화형으로 띄워 실제로 어디에 설치되는지 먼저 확인하십시오.
 
 ---
@@ -123,14 +128,17 @@ git push origin v0.1.0
    나오는 `--check-gui` 는 굳어진 바이너리의 임포트만 확인하는 것과 다름.
    빌드 전에 두어 GUI 회귀는 여러 분 걸리는 빌드를 기다리지 않고 바로
    잡힙니다.
-4. `desktop/` 에서 `pyinstaller build/tsbackup.spec` → `TsBackup.exe`
-5. `TsBackup.exe --config`/`--check-gui` 로 그 바이너리 자체를 확인
-6. 태그에서 버전 뽑기(없으면 `0.0.0`) → `iscc /DMyAppVersion=... build\tsbackup.iss`
-   → `TsBackup-Setup.exe`
-7. 그 설치 파일을 조용히 설치(`/CURRENTUSER`)한 뒤 **설치된** 경로에서
+4. `build/make_icon.py` 로 `dist/naru.ico` 생성 (`app/icons.py` 의 코드
+   드로잉을 PyInstaller/Inno Setup 이 쓸 .ico 로 렌더링)
+5. `desktop/` 에서 `pyinstaller build/tsbackup.spec` → `Naru.exe`
+6. `Naru.exe --config`/`--check-gui` 로 그 바이너리 자체를 확인
+7. 태그에서 버전 뽑기(없으면 `0.0.0`) → `iscc /DMyAppVersion=... build\naru.iss`
+   → `Naru-Setup.exe`
+8. 그 설치 파일을 조용히 설치(`/CURRENTUSER`)한 뒤 **설치된** 경로에서
    다시 `--config`/`--check-gui` — 설치 파일이 컴파일만 된 게 아니라 실제로
    설치되고 도는지까지 확인
-8. `desktop/dist/TsBackup-Setup.exe` 를 그 태그의 GitHub 릴리스에 업로드
+9. `desktop/dist/Naru-Setup.exe` 와 `desktop/dist/Naru.exe` 를 그 태그의
+   GitHub 릴리스에 업로드
 
 태그 이름이 곧 버전입니다. `desktop/tsbackup/__init__.py` 의 `__version__` 과
 맞춰 두면 릴리스 노트에서 헷갈리지 않습니다.

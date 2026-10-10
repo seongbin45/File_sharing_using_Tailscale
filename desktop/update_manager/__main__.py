@@ -1,8 +1,8 @@
 """
-TsBackup_update_manager — silent loop.
+Naru_update_manager — silent loop.
 
   python -m update_manager
-  TsBackup_update_manager.exe [--once] [--interval 600]
+  Naru_update_manager.exe [--once] [--interval 600]
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ def _acquire_mutex():
     import ctypes
 
     kernel32 = ctypes.windll.kernel32
-    name = "Global\\TsBackupUpdateManagerMutex"
+    name = "Global\\NaruUpdateManagerMutex"
     handle = kernel32.CreateMutexW(None, False, name)
     last = kernel32.GetLastError()
     if last == 183:
@@ -68,7 +68,7 @@ def run_once(log: logging.Logger) -> str:
     """
     install_dir = find_tsbackup_install_dir()
     if install_dir is None:
-        log.info("TsBackup install dir not found - skip")
+        log.info("Naru install dir not found - skip")
         return "no_install"
 
     run_id = status_io.start_run(install_dir, pid=os.getpid())
@@ -122,7 +122,7 @@ def run_once(log: logging.Logger) -> str:
                 return "deferred_ui"
 
             if not kill_tsbackup_processes():
-                log.error("could not stop TsBackup.exe - abort update (files intact)")
+                log.error("could not stop Naru.exe - abort update (files intact)")
                 status_io.finish_run(install_dir, run_id, "killed_failed")
                 return "killed_failed"
 
@@ -163,7 +163,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     log = setup_logging()
-    log.info("TsBackup Update Manager %s starting", __version__)
+    log.info("Naru Update Manager %s starting", __version__)
 
     mutex = _acquire_mutex()
     if mutex is None:

@@ -1,5 +1,5 @@
 """Per-run status files + atomic current.json pointer, for the tray's
-"check now" polling. No ACL tuning (unlike CloneUp) - a TsBackup install
+"check now" polling. No ACL tuning (unlike CloneUp) - a Naru install
 is single-user, so default Windows ACLs on install_dir already grant
 that one user everything needed."""
 

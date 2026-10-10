@@ -1,15 +1,15 @@
-# PyInstaller spec for TsBackup_update_manager.
+# PyInstaller spec for Naru_update_manager.
 #
 #   cd desktop
 #   pyinstaller build/update_manager.spec
 #
-# Produces dist/TsBackup_update_manager.exe (one file), a fully independent
-# background process from TsBackup.exe itself - see docs in
+# Produces dist/Naru_update_manager.exe (one file), a fully independent
+# background process from Naru.exe itself - see docs in
 # update_manager/__init__.py and the plan this was built from.
 #
 # console=False: a GUI-subsystem exe with no console of its own - but it is
 # still always launched through the hidden VBS wrapper
-# (update_manager/launchers/TsBackup_update_manager_hidden.vbs), never
+# (update_manager/launchers/Naru_update_manager_hidden.vbs), never
 # directly from a shortcut/Task - CloneUp's own installer comment records
 # that some Task-Scheduler/AV configurations still flash a console for a
 # onefile exe launched directly at logon even when console=False, which the
@@ -53,7 +53,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name="TsBackup_update_manager",
+    name="Naru_update_manager",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -67,4 +67,7 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     version_file=None,
+    # Same reasoning as tsbackup.spec - a build-time-only .ico embedded into
+    # this exe's own Windows resources, nothing this process loads at runtime.
+    icon=os.path.join(here, "dist", "naru.ico"),
 )

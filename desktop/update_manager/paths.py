@@ -1,9 +1,9 @@
-"""Locate the installed TsBackup application directory (before any update).
+"""Locate the installed Naru application directory (before any update).
 
 Unlike CloneUp, there is no separate manager_install_dir(): the update
-manager's own exe/launchers live in the same {app} folder as TsBackup.exe
+manager's own exe/launchers live in the same {app} folder as Naru.exe
 (see the plan's "Install location" section for why that's safe here -
-the apply step only ever replaces the single named file TsBackup.exe,
+the apply step only ever replaces the single named file Naru.exe,
 never wipes the folder, so there's nothing for the update manager's own
 files to collide with)."""
 
@@ -20,9 +20,9 @@ except ImportError:  # non-Windows (dev/test sandbox) - registry lookups
 
 from update_manager.config import INNO_APP_ID
 
-UM_EXE_NAME = "TsBackup_update_manager.exe"
-UM_BAT_NAME = "TsBackup_update_manager.bat"
-UM_VBS_NAME = "TsBackup_update_manager_hidden.vbs"
+UM_EXE_NAME = "Naru_update_manager.exe"
+UM_BAT_NAME = "Naru_update_manager.bat"
+UM_VBS_NAME = "Naru_update_manager_hidden.vbs"
 
 
 def _local_app_data() -> Path:
@@ -55,23 +55,23 @@ def status_root(install_dir: Path) -> Path:
     return root.resolve()
 
 
-def _looks_like_tsbackup_dir(folder: Path) -> bool:
-    """True if folder appears to be a TsBackup onefile install (the exe is
+def _looks_like_naru_dir(folder: Path) -> bool:
+    """True if folder appears to be a Naru onefile install (the exe is
     the whole artifact - no _internal/onedir tree to check)."""
     try:
         if not folder.is_dir():
             return False
     except OSError:
         return False
-    return (folder / "TsBackup.exe").is_file()
+    return (folder / "Naru.exe").is_file()
 
 
 def _uninstall_display_icon_dir(icon_path: str) -> Path | None:
-    # UninstallDisplayIcon={app}\TsBackup.exe (tsbackup.iss)
+    # UninstallDisplayIcon={app}\Naru.exe (naru.iss)
     p = Path(icon_path.strip().strip('"'))
     if p.suffix.lower() in {".ico", ".exe"}:
         parent = p.parent
-        if _looks_like_tsbackup_dir(parent):
+        if _looks_like_naru_dir(parent):
             return parent.resolve()
     return None
 
@@ -81,7 +81,7 @@ def _parse_uninstall_key(key) -> Path | None:
         try:
             val, _ = winreg.QueryValueEx(key, value_name)
             p = Path(str(val).strip().strip('"'))
-            if _looks_like_tsbackup_dir(p):
+            if _looks_like_naru_dir(p):
                 return p.resolve()
         except OSError:
             pass
@@ -95,7 +95,7 @@ def _parse_uninstall_key(key) -> Path | None:
     try:
         uni, _ = winreg.QueryValueEx(key, "UninstallString")
         p = Path(str(uni).strip().strip('"').split(" /")[0].strip('"'))
-        if p.name.lower().startswith("unins") and _looks_like_tsbackup_dir(p.parent):
+        if p.name.lower().startswith("unins") and _looks_like_naru_dir(p.parent):
             return p.parent.resolve()
     except OSError:
         pass
@@ -103,9 +103,10 @@ def _parse_uninstall_key(key) -> Path | None:
 
 
 def _read_uninstall_install_location() -> Path | None:
-    """Read Inno / ARP uninstall keys for TsBackup InstallLocation or icon
+    """Read Inno / ARP uninstall keys for Naru's InstallLocation or icon
     path. Checks both HKLM (admin/per-machine install) and HKCU (per-user
-    install, since tsbackup.iss uses PrivilegesRequired=lowest)."""
+    install, since naru.iss uses PrivilegesRequired=admin with an allowed
+    per-user override)."""
     if sys.platform != "win32":
         return None
     roots = (
@@ -155,7 +156,7 @@ def _read_uninstall_install_location() -> Path | None:
                                 display, _ = winreg.QueryValueEx(key, "DisplayName")
                             except OSError:
                                 continue
-                            if not str(display).strip().startswith("TsBackup"):
+                            if not str(display).strip().startswith("나루"):
                                 continue
                             got = _parse_uninstall_key(key)
                             if got is not None:
@@ -172,27 +173,27 @@ def _candidate_dirs() -> list[Path]:
     pf = os.environ.get("ProgramFiles", r"C:\Program Files")
     pf86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
     return [
-        local / "Programs" / "TsBackup",
-        Path(pf) / "TsBackup",
-        Path(pf86) / "TsBackup",
-        local / "TsBackup",  # mistaken / legacy
+        local / "Programs" / "Naru",
+        Path(pf) / "Naru",
+        Path(pf86) / "Naru",
+        local / "Naru",  # mistaken / legacy
     ]
 
 
 def find_tsbackup_install_dir() -> Path | None:
     """
-    Resolve the folder that contains TsBackup.exe.
+    Resolve the folder that contains Naru.exe.
 
     Order:
-      1. ``TSBACKUP_INSTALL_DIR`` env (tests / override)
+      1. ``NARU_INSTALL_DIR`` env (tests / override)
       2. Uninstall / ARP registry (Inno AppId + DisplayName) - checks both
          HKLM (admin install) and HKCU (per-user install)
-      3. Well-known default paths with ``TsBackup.exe`` present
+      3. Well-known default paths with ``Naru.exe`` present
     """
-    env = os.environ.get("TSBACKUP_INSTALL_DIR", "").strip()
+    env = os.environ.get("NARU_INSTALL_DIR", "").strip()
     if env:
         p = Path(env).expanduser()
-        if _looks_like_tsbackup_dir(p):
+        if _looks_like_naru_dir(p):
             return p.resolve()
         return None
 
@@ -201,6 +202,6 @@ def find_tsbackup_install_dir() -> Path | None:
         return from_reg
 
     for cand in _candidate_dirs():
-        if _looks_like_tsbackup_dir(cand):
+        if _looks_like_naru_dir(cand):
             return cand.resolve()
     return None

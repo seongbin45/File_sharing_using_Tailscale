@@ -46,7 +46,7 @@ class SftpTransport(Transport):
             return TransferResult(False, "sftp host/username 이 없습니다.")
         password = self._password()
         if not password:
-            return TransferResult(False, "sftp 비밀번호가 없습니다 (환경변수 TSBACKUP_SFTP_PASSWORD).")
+            return TransferResult(False, "sftp 비밀번호가 없습니다 (환경변수 NARU_SFTP_PASSWORD).")
 
         started = time.time()
         client = paramiko.SSHClient()
@@ -88,7 +88,7 @@ class SftpTransport(Transport):
 
     def _password(self) -> str:
         import os
-        return os.environ.get("TSBACKUP_SFTP_PASSWORD", "")
+        return os.environ.get("NARU_SFTP_PASSWORD", "")
 
 
 def _upload_resumable(sftp, local: Path, tmp: str,

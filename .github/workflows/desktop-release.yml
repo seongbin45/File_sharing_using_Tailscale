@@ -1,7 +1,7 @@
 name: desktop-release
 
-# Build the TsBackup desktop app and package it as a Windows installer
-# (TsBackup-Setup.exe, via Inno Setup - see build/tsbackup.iss), then
+# Build the Naru (나루) desktop app and package it as a Windows installer
+# (Naru-Setup.exe, via Inno Setup - see build/naru.iss), then
 # attach that installer to a GitHub Release. PyInstaller output is
 # OS-specific, so this MUST run on a Windows runner - a Linux build would
 # produce an ELF, not the .exe the installer needs to wrap. Inno Setup
@@ -79,7 +79,16 @@ jobs:
         # regression fails fast rather than after a multi-minute build.
         run: python -m tests.gui_smoke
 
-      - name: Build TsBackup.exe
+      - name: Generate app icon
+        # Renders naru.ico from app/icons.py's own drawing code (the same
+        # source the running app's window/tray icon uses) at every size
+        # icons.py defines - must run before either PyInstaller spec or
+        # iscc below, all three of which now embed dist\naru.ico.
+        run: |
+          python -m pip install Pillow
+          python build/make_icon.py
+
+      - name: Build Naru.exe
         run: pyinstaller build/tsbackup.spec
 
       - name: Smoke-test the binary
@@ -91,17 +100,17 @@ jobs:
         # script as bare __main__, unlike `python -m app.main` in dev)
         # because it returns before _gui() is ever reached.
         run: |
-          .\dist\TsBackup.exe --config
-          .\dist\TsBackup.exe --check-gui
+          .\dist\Naru.exe --config
+          .\dist\Naru.exe --check-gui
 
-      - name: Build TsBackup_update_manager.exe
+      - name: Build Naru_update_manager.exe
         # A fully independent background exe - see update_manager/'s own
-        # docs. tsbackup.iss's [Files] section expects this at dist\ next
-        # to TsBackup.exe.
+        # docs. naru.iss's [Files] section expects this at dist\ next
+        # to Naru.exe.
         run: pyinstaller build/update_manager.spec
 
       - name: Smoke-test the update manager binary
-        # --once against a scratch install dir with no real TsBackup.exe
+        # --once against a scratch install dir with no real Naru.exe
         # in it: proves the frozen bundle's imports resolve (ctypes/winreg/
         # urllib) and that run_once() reaches and correctly reports
         # "no_version" for a directory with no VERSION/exe to read -
@@ -109,8 +118,8 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\um_smoke" | Out-Null
-          $env:TSBACKUP_INSTALL_DIR = "$env:RUNNER_TEMP\um_smoke"
-          .\dist\TsBackup_update_manager.exe --once
+          $env:NARU_INSTALL_DIR = "$env:RUNNER_TEMP\um_smoke"
+          .\dist\Naru_update_manager.exe --once
 
       - name: Determine version
         # From the vX.Y.Z tag when this run was triggered by one; 99.0.0 for
@@ -119,7 +128,7 @@ jobs:
         # "Install and smoke-test the installer" steps run the *real*
         # update manager against this real installed VERSION and make a
         # genuine network call to the real GitHub Releases API - once a
-        # real vX.Y.Z release exists with a matching TsBackup.exe asset
+        # real vX.Y.Z release exists with a matching Naru.exe asset
         # (true from v0.3.0 onward), an 0.0.0 dev build looks older than
         # it and the smoke test would perform a real live self-update
         # (download + kill + replace + relaunch a persistent tray
@@ -143,32 +152,32 @@ jobs:
         run: Set-Content -Path dist\VERSION -Value "${{ steps.ver.outputs.version }}" -NoNewline -Encoding ascii
 
       - name: Build installer
-        run: iscc /DMyAppVersion=${{ steps.ver.outputs.version }} build\tsbackup.iss
+        run: iscc /DMyAppVersion=${{ steps.ver.outputs.version }} build\naru.iss
 
       - name: Install and smoke-test the installer (per-machine / admin)
         # This is the installer's new *default* mode (PrivilegesRequired
-        # is now "admin" - tsbackup.iss), and the one that was actually
+        # is now "admin" - naru.iss), and the one that was actually
         # broken on real hardware: the update manager runs unelevated
         # (login-triggered) but {app} lands in Program Files, where
-        # Windows ACLs deny an unelevated write unless tsbackup.iss's
+        # Windows ACLs deny an unelevated write unless naru.iss's
         # [Dirs] "users-modify" grant is actually in effect. This pass is
         # what would have caught that - it never ran before this fix.
         shell: pwsh
         run: |
-          Start-Process -FilePath ".\dist\TsBackup-Setup.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/ALLUSERS" -Wait
-          $installDir = "${env:ProgramFiles(x86)}\TsBackup"
-          if (!(Test-Path $installDir)) { $installDir = "$env:ProgramFiles\TsBackup" }
-          $installed = "$installDir\TsBackup.exe"
+          Start-Process -FilePath ".\dist\Naru-Setup.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/ALLUSERS" -Wait
+          $installDir = "${env:ProgramFiles(x86)}\Naru"
+          if (!(Test-Path $installDir)) { $installDir = "$env:ProgramFiles\Naru" }
+          $installed = "$installDir\Naru.exe"
           if (!(Test-Path $installed)) { throw "installed exe not found at $installed" }
           & $installed --config
           & $installed --check-gui
-          foreach ($name in @("TsBackup_update_manager.exe","TsBackup_update_manager.bat","TsBackup_update_manager_hidden.vbs","VERSION")) {
+          foreach ($name in @("Naru_update_manager.exe","Naru_update_manager.bat","Naru_update_manager_hidden.vbs","VERSION")) {
             if (!(Test-Path "$installDir\$name")) { throw "missing installed file: $installDir\$name" }
           }
-          $env:TSBACKUP_INSTALL_DIR = $installDir
+          $env:NARU_INSTALL_DIR = $installDir
           # The actual regression check: this write (status_root's mkdir,
           # by way of run_once()) previously failed with WinError 5 here.
-          # Start-Process -Wait -PassThru, not "&": the previous run saw
+          # Start-Process -Wait -PassThru, not "&": an earlier run saw
           # $LASTEXITCODE come back blank (not 0, not nonzero - unset)
           # after "&" against this console=False exe, with no new log
           # line at all - i.e. the process may never have actually
@@ -177,18 +186,18 @@ jobs:
           # refused (AV/SmartScreen on a just-installed Program Files
           # exe is the leading suspect), and Wait-Process as a backstop
           # against Start-Process -Wait itself returning early.
-          $proc = Start-Process -FilePath "$installDir\TsBackup_update_manager.exe" -ArgumentList "--once" -PassThru
+          $proc = Start-Process -FilePath "$installDir\Naru_update_manager.exe" -ArgumentList "--once" -PassThru
           Wait-Process -Id $proc.Id -Timeout 60 -ErrorAction SilentlyContinue
           $code = $proc.ExitCode
           Write-Host "update manager --once exit code: $code"
-          Write-Host "exe still present after run: $(Test-Path "$installDir\TsBackup_update_manager.exe")"
+          Write-Host "exe still present after run: $(Test-Path "$installDir\Naru_update_manager.exe")"
           # console=False means a crash here is otherwise silent - dump
           # its own log so a future failure doesn't need re-diagnosing
-          # from scratch (the log path is %LOCALAPPDATA%\TsBackup\, not
+          # from scratch (the log path is %LOCALAPPDATA%\Naru\, not
           # $installDir). This file is shared across every step in this
           # job (log_dir() ignores install_dir), so only the last few
           # lines are this invocation's.
-          $umLog = "$env:LOCALAPPDATA\TsBackup\update_manager.log"
+          $umLog = "$env:LOCALAPPDATA\Naru\update_manager.log"
           if (Test-Path $umLog) { Write-Host "--- update_manager.log (tail) ---"; Get-Content $umLog -Tail 10 }
           try {
             $threats = Get-MpThreatDetection -ErrorAction Stop
@@ -203,25 +212,25 @@ jobs:
         # from the admin pass above.
         shell: pwsh
         run: |
-          Start-Process -FilePath ".\dist\TsBackup-Setup.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/CURRENTUSER" -Wait
-          $installDir = "$env:LOCALAPPDATA\Programs\TsBackup"
-          $installed = "$installDir\TsBackup.exe"
+          Start-Process -FilePath ".\dist\Naru-Setup.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/CURRENTUSER" -Wait
+          $installDir = "$env:LOCALAPPDATA\Programs\Naru"
+          $installed = "$installDir\Naru.exe"
           if (!(Test-Path $installed)) { throw "installed exe not found at $installed" }
           & $installed --config
           & $installed --check-gui
-          # The update manager's own files, per tsbackup.iss's [Files] -
+          # The update manager's own files, per naru.iss's [Files] -
           # confirms they actually land in the real install dir, not just
           # that iscc compiled without complaint.
-          foreach ($name in @("TsBackup_update_manager.exe","TsBackup_update_manager.bat","TsBackup_update_manager_hidden.vbs","VERSION")) {
+          foreach ($name in @("Naru_update_manager.exe","Naru_update_manager.bat","Naru_update_manager_hidden.vbs","VERSION")) {
             if (!(Test-Path "$installDir\$name")) { throw "missing installed file: $installDir\$name" }
           }
-          $env:TSBACKUP_INSTALL_DIR = $installDir
-          $proc = Start-Process -FilePath "$installDir\TsBackup_update_manager.exe" -ArgumentList "--once" -PassThru
+          $env:NARU_INSTALL_DIR = $installDir
+          $proc = Start-Process -FilePath "$installDir\Naru_update_manager.exe" -ArgumentList "--once" -PassThru
           Wait-Process -Id $proc.Id -Timeout 60 -ErrorAction SilentlyContinue
           $code = $proc.ExitCode
           Write-Host "update manager --once exit code: $code"
-          Write-Host "exe still present after run: $(Test-Path "$installDir\TsBackup_update_manager.exe")"
-          $umLog = "$env:LOCALAPPDATA\TsBackup\update_manager.log"
+          Write-Host "exe still present after run: $(Test-Path "$installDir\Naru_update_manager.exe")"
+          $umLog = "$env:LOCALAPPDATA\Naru\update_manager.log"
           if (Test-Path $umLog) { Write-Host "--- update_manager.log (tail) ---"; Get-Content $umLog -Tail 10 }
           try {
             $threats = Get-MpThreatDetection -ErrorAction Stop
@@ -234,8 +243,8 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: TsBackup-Setup
-          path: desktop/dist/TsBackup-Setup.exe
+          name: Naru-Setup
+          path: desktop/dist/Naru-Setup.exe
           if-no-files-found: error
 
       # Only on a version tag: publish/attach to the release.
@@ -244,8 +253,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            desktop/dist/TsBackup-Setup.exe
-            desktop/dist/TsBackup.exe
+            desktop/dist/Naru-Setup.exe
+            desktop/dist/Naru.exe
           fail_on_unmatched_files: true
 
       - name: Remove stale release assets
@@ -258,7 +267,7 @@ jobs:
         # conflicting download. gh CLI + GITHUB_TOKEN are already available
         # on the runner - no extra setup needed.
         #
-        # TsBackup.exe is kept deliberately alongside TsBackup-Setup.exe now
+        # Naru.exe is kept deliberately alongside Naru-Setup.exe now
         # (not stale) - update_manager/'s auto-updater downloads this raw
         # exe directly, never the installer (running Setup.exe unattended
         # would pop the Inno wizard).
@@ -269,7 +278,7 @@ jobs:
         run: |
           $tag = "${{ github.ref_name }}"
           $repo = "${{ github.repository }}"
-          $keep = @("TsBackup-Setup.exe", "TsBackup.exe")
+          $keep = @("Naru-Setup.exe", "Naru.exe")
           $names = gh release view $tag --repo $repo --json assets --jq ".assets[].name"
           foreach ($name in ($names -split "`n")) {
             $name = $name.Trim()

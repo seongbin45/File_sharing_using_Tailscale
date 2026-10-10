@@ -11,23 +11,23 @@ API_LATEST = (
 # Poll interval (seconds).
 INTERVAL_SEC = 600
 
-# The one release asset this updater ever fetches. TsBackup is a PyInstaller
+# The one release asset this updater ever fetches. Naru is a PyInstaller
 # --onefile build, so the raw exe is already the whole artifact - no zip.
-ASSET_NAME = "TsBackup.exe"
+ASSET_NAME = "Naru.exe"
 
-# Main window title used by TsBackup (exact - app/main_window.py's
-# setWindowTitle("TS Backup")). The wizard's "TS Backup 설정" dialog is a
-# separate, non-main window and is intentionally not matched here.
-MAIN_WINDOW_TITLE = "TS Backup"
+# Main window title (exact - app/main_window.py's setWindowTitle("나루")).
+# The wizard's "나루 설정" dialog is a separate, non-main window and is
+# intentionally not matched here.
+MAIN_WINDOW_TITLE = "나루"
 
 # Process image to stop before replacing files.
-TSBACKUP_EXE_NAME = "TsBackup.exe"
+TSBACKUP_EXE_NAME = "Naru.exe"
 
 # Never kill this (ourselves).
-PROTECTED_EXE_NAMES = frozenset({"TsBackup_update_manager.exe"})
+PROTECTED_EXE_NAMES = frozenset({"Naru_update_manager.exe"})
 
-# Inno AppId, copied verbatim from desktop/build/tsbackup.iss - fixed
+# Inno AppId, copied verbatim from desktop/build/naru.iss - fixed
 # forever, never regenerate.
 INNO_APP_ID = "{8F2C4A61-9E3B-4C7A-BD5E-1A6F3D9E2B47}"
 
-USER_AGENT = "TsBackup-UpdateManager/0.1.0"
+USER_AGENT = "Naru-UpdateManager/0.1.0"

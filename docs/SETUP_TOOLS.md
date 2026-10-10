@@ -15,7 +15,7 @@
 
 **Python 이 필요 없는 경우:** `scripts/` 의 백업 배치/PowerShell 파이프라인(이 문서의 원래
 대상)은 Python 을 전혀 쓰지 않습니다 — [README](../README.md#왜-이런-구조인가) 참고. 빌드된
-`TsBackup-Setup.exe` 를 그냥 설치해 쓰는 것도 마찬가지입니다 — PyInstaller 로 파이썬 런타임이
+`Naru-Setup.exe` 를 그냥 설치해 쓰는 것도 마찬가지입니다 — PyInstaller 로 파이썬 런타임이
 이미 exe 안에 들어 있습니다. Python 은 오직 `webadmin/`(관리 콘솔) 을 돌리거나 `desktop/` 앱을
 소스에서 고쳐가며 실행할 때만 필요합니다.
 
@@ -278,7 +278,7 @@ python --version
 
 ## 저장소 받기 + 파이썬 패키지 설치 (webadmin / desktop 소스 실행 시)
 
-`scripts/` 배치 파이프라인이나 빌드된 `TsBackup-Setup.exe` 만 쓴다면 이 절은 건너뛰어도
+`scripts/` 배치 파이프라인이나 빌드된 `Naru-Setup.exe` 만 쓴다면 이 절은 건너뛰어도
 됩니다. `webadmin/` 콘솔을 띄우거나 `desktop/` 앱을 소스에서 직접 실행·개발할 때만
 필요합니다. git 과 Python 이 위에서 이미 확인됐다는 전제입니다.
 

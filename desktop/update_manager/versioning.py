@@ -1,4 +1,4 @@
-"""Version parse / compare for installed TsBackup vs release tags."""
+"""Version parse / compare for installed Naru vs release tags."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ def is_newer(remote: tuple[int, int, int], local: tuple[int, int, int]) -> bool:
 
 def read_installed_version(install_dir: Path) -> tuple[int, int, int] | None:
     """Prefer the plain ``VERSION`` file the installer drops beside
-    TsBackup.exe; then the exe's own PE FileVersion; then ARP
+    Naru.exe; then the exe's own PE FileVersion; then ARP
     DisplayVersion."""
     ver_file = install_dir / "VERSION"
     try:
@@ -40,7 +40,7 @@ def read_installed_version(install_dir: Path) -> tuple[int, int, int] | None:
                 return got
     except OSError:
         pass
-    pe = _read_exe_file_version(install_dir / "TsBackup.exe")
+    pe = _read_exe_file_version(install_dir / "Naru.exe")
     if pe is not None and pe != (0, 0, 0):
         return pe
     arp = _read_arp_display_version()
@@ -50,7 +50,7 @@ def read_installed_version(install_dir: Path) -> tuple[int, int, int] | None:
 
 
 def _read_arp_display_version() -> tuple[int, int, int] | None:
-    """Windows Apps & Features DisplayVersion for TsBackup (Inno)."""
+    """Windows Apps & Features DisplayVersion for Naru (Inno)."""
     import sys
 
     if sys.platform != "win32":
@@ -104,7 +104,7 @@ def _read_arp_display_version() -> tuple[int, int, int] | None:
                                 display, _ = winreg.QueryValueEx(key, "DisplayName")
                             except OSError:
                                 continue
-                            if not str(display).strip().startswith("TsBackup"):
+                            if not str(display).strip().startswith("나루"):
                                 continue
                             val, _ = winreg.QueryValueEx(key, "DisplayVersion")
                             got = normalize_version(str(val))

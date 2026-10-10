@@ -1,12 +1,12 @@
-"""Download the release TsBackup.exe and atomically replace the installed
+"""Download the release Naru.exe and atomically replace the installed
 one.
 
-Does **not** run TsBackup-Setup.exe (that would show the installer GUI).
-Since TsBackup is a PyInstaller --onefile build, "apply" is just "replace
+Does **not** run Naru-Setup.exe (that would show the installer GUI).
+Since Naru is a PyInstaller --onefile build, "apply" is just "replace
 one file" - unlike CloneUp's onedir zip-extract-then-copy-folder-tree,
 there is no separate stage/extract step and no risk of the apply step
 wiping the update manager's own files (they live in the same {app}
-folder as TsBackup.exe but under a different filename - see the plan's
+folder as Naru.exe but under a different filename - see the plan's
 "Install location" section).
 
 Download resilience (ported near-verbatim from CloneUp's apply.py, which
@@ -30,13 +30,13 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from update_manager.config import USER_AGENT
+from update_manager.config import TSBACKUP_EXE_NAME, USER_AGENT
 from update_manager.github_release import LatestRelease, host_allowed
 from update_manager.versioning import version_tuple_to_str
 
 log = logging.getLogger("tsbackup_update_manager")
 
-# TsBackup.exe is tens of MB, not hundreds - shorter timeout than CloneUp's
+# Naru.exe is tens of MB, not hundreds - shorter timeout than CloneUp's
 # 900s is fine, but keep it generous for a slow tailnet/VPN link.
 _DOWNLOAD_TIMEOUT_SEC = 300
 _DOWNLOAD_MAX_ATTEMPTS = 8
@@ -339,13 +339,13 @@ def download_asset(url: str, dest: Path, *, digest: str | None = None) -> None:
 
 
 def install_staged_exe(staged_exe: Path, install_dir: Path) -> None:
-    """Atomically replace the live TsBackup.exe with an already-downloaded
+    """Atomically replace the live Naru.exe with an already-downloaded
     and digest-verified file (produced by pending.py's Tier-2 staging).
     Call this only after confirming the main window isn't visible and the
     running process has been stopped - the retry loop in _atomic_replace
     handles a lingering AV file lock, not a still-running process holding
     the exe open."""
-    dest = install_dir / "TsBackup.exe"
+    dest = install_dir / TSBACKUP_EXE_NAME
     _atomic_replace(staged_exe, dest)
     log.info("applied %s -> %s", staged_exe, dest)
 
@@ -358,7 +358,7 @@ def apply_exe_update(release: LatestRelease, install_dir: Path) -> None:
     apply doesn't need cross-tick defer/resume - the production
     run_once() loop in __main__.py uses pending.py + install_staged_exe()
     instead, so a download survives a deferred apply across ticks."""
-    staged = install_dir / "TsBackup.exe.new"
+    staged = install_dir / f"{TSBACKUP_EXE_NAME}.new"
     log.info(
         "downloading %s -> %s",
         version_tuple_to_str(release.version),

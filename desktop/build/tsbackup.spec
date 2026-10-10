@@ -1,15 +1,18 @@
-# PyInstaller spec for TsBackup.
+# PyInstaller spec for Naru (나루).
 #
 #   cd desktop
 #   pyinstaller build/tsbackup.spec
 #
-# Produces dist/TsBackup.exe (one file). Build it ON WINDOWS - a PyInstaller
+# Produces dist/Naru.exe (one file). Build it ON WINDOWS - a PyInstaller
 # binary is platform-specific, so a Linux build is a Linux ELF, not the .exe
 # the release needs.
 #
 # Notes that save a broken build:
-#  * The icon is painted in code (app/icons.py), so there is no .ico/.png to
-#    bundle and no runtime path to get wrong in a --onefile temp dir.
+#  * The app's own window/tray icon is still painted in code (app/icons.py) -
+#    no runtime path to get wrong in a --onefile temp dir. icon= below is a
+#    separate thing: a build-time-only .ico (build/make_icon.py renders it
+#    from that same code) embedded into this .exe's own Windows resources,
+#    for Explorer/taskbar/Alt-Tab - it's never a runtime dependency.
 #  * py7zr pulls in compression backends that PyInstaller's hooks usually find,
 #    but if a "no module named _lzma / brotli / zstandard" appears at runtime,
 #    add it to hiddenimports below.
@@ -60,7 +63,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name="TsBackup",
+    name="Naru",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -74,4 +77,9 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     version_file=None,
+    # Absolute, same reasoning as the script path above (icon= is resolved
+    # relative to the .spec file's own directory, not cwd, if given as a
+    # bare relative string). build/make_icon.py writes this before this
+    # spec runs (see desktop-release.yml).
+    icon=os.path.join(here, "dist", "naru.ico"),
 )

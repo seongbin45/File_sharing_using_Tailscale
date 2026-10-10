@@ -1,6 +1,6 @@
 """One GUI instance per user.
 
-Autostart puts TsBackup in the tray at login, so the next double-click on the
+Autostart puts Naru in the tray at login, so the next double-click on the
 shortcut would otherwise start a second engine: two timers compressing the
 same folder, or two receivers unpacking the same archive. A second launch
 instead asks the running one to show its window, then exits - the same
@@ -30,7 +30,7 @@ class InstanceGuard:
         # Per lock file, so each Windows user (separate %LOCALAPPDATA%) gets
         # its own instance; pipe names are machine-wide.
         digest = hashlib.sha1(str(lock_path).lower().encode("utf-8")).hexdigest()[:16]
-        self.server_name = f"TsBackup-{digest}"
+        self.server_name = f"Naru-{digest}"
         self._fh = None
         self._server: QLocalServer | None = None
 

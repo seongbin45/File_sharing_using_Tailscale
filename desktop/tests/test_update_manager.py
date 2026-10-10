@@ -95,7 +95,7 @@ def test_versioning():
     section("versioning: normalize_version / is_newer")
     check("v-prefixed tag parses", normalize_version("v0.2.1") == (0, 2, 1))
     check("bare version parses", normalize_version("0.2.1") == (0, 2, 1))
-    check("embedded in text parses", normalize_version("TsBackup 0.2.1") == (0, 2, 1))
+    check("embedded in text parses", normalize_version("Naru 0.2.1") == (0, 2, 1))
     check("unparseable text is None", normalize_version("nope") is None)
     check("newer release beats older install", is_newer((0, 2, 2), (0, 2, 1)) is True)
     check("same version is not newer", is_newer((0, 2, 1), (0, 2, 1)) is False)
@@ -116,15 +116,15 @@ def test_fetch_latest_release_parsing():
     payload_with_exe = {
         "tag_name": "v0.2.2",
         "assets": [
-            {"name": "TsBackup-Setup.exe", "browser_download_url": "https://github.com/x/setup.exe"},
-            {"name": "TsBackup.exe", "browser_download_url": "https://github.com/x/TsBackup.exe",
+            {"name": "Naru-Setup.exe", "browser_download_url": "https://github.com/x/setup.exe"},
+            {"name": "Naru.exe", "browser_download_url": "https://github.com/x/Naru.exe",
              "digest": "sha256:" + "a" * 64},
         ],
     }
     payload_setup_only = {
         "tag_name": "v0.2.3",
         "assets": [
-            {"name": "TsBackup-Setup.exe", "browser_download_url": "https://github.com/x/setup.exe"},
+            {"name": "Naru-Setup.exe", "browser_download_url": "https://github.com/x/setup.exe"},
         ],
     }
 
@@ -146,8 +146,8 @@ def test_fetch_latest_release_parsing():
     with patch("update_manager.github_release.urllib.request.urlopen",
                return_value=FakeResp(payload_with_exe)):
         got = github_release.fetch_latest_release()
-    check("picks the raw TsBackup.exe asset, never Setup.exe",
-          got is not None and got.asset_name == "TsBackup.exe", got)
+    check("picks the raw Naru.exe asset, never Setup.exe",
+          got is not None and got.asset_name == "Naru.exe", got)
     check("version comes from the tag", got.version == (0, 2, 2))
 
     with patch("update_manager.github_release.urllib.request.urlopen",
@@ -250,34 +250,34 @@ def test_download_asset_requires_digest():
 
 
 def test_install_staged_exe_replaces_live_one():
-    section("apply.install_staged_exe - atomic replace of the live TsBackup.exe")
+    section("apply.install_staged_exe - atomic replace of the live Naru.exe")
     with tempfile.TemporaryDirectory() as tmp:
         install_dir = Path(tmp)
-        (install_dir / "TsBackup.exe").write_bytes(b"old content")
-        staged = install_dir / "TsBackup.exe.new"
+        (install_dir / "Naru.exe").write_bytes(b"old content")
+        staged = install_dir / "Naru.exe.new"
         staged.write_bytes(b"new content")
         apply_mod.install_staged_exe(staged, install_dir)
         check("live exe now holds the staged content",
-              (install_dir / "TsBackup.exe").read_bytes() == b"new content")
+              (install_dir / "Naru.exe").read_bytes() == b"new content")
         check("the staged file is consumed (moved, not copied)", not staged.exists())
 
 
 def test_find_install_dir_env_override():
-    section("paths.find_tsbackup_install_dir - TSBACKUP_INSTALL_DIR override")
+    section("paths.find_tsbackup_install_dir - NARU_INSTALL_DIR override")
     with tempfile.TemporaryDirectory() as tmp:
-        app = Path(tmp) / "TsBackup"
+        app = Path(tmp) / "Naru"
         app.mkdir()
-        (app / "TsBackup.exe").write_bytes(b"MZ")
-        with patch.dict("os.environ", {"TSBACKUP_INSTALL_DIR": str(app)}):
+        (app / "Naru.exe").write_bytes(b"MZ")
+        with patch.dict("os.environ", {"NARU_INSTALL_DIR": str(app)}):
             got = paths.find_tsbackup_install_dir()
         check("resolves to the overridden dir when it looks like a real install",
               got == app.resolve(), got)
 
         empty = Path(tmp) / "empty"
         empty.mkdir()
-        with patch.dict("os.environ", {"TSBACKUP_INSTALL_DIR": str(empty)}):
+        with patch.dict("os.environ", {"NARU_INSTALL_DIR": str(empty)}):
             got_bad = paths.find_tsbackup_install_dir()
-        check("an override with no TsBackup.exe in it does not fall through to "
+        check("an override with no Naru.exe in it does not fall through to "
               "a real install on this machine - returns None instead",
               got_bad is None, got_bad)
 
@@ -305,10 +305,10 @@ def test_tsbackup_exe_running_korean_locale_bytes():
               pw._tsbackup_exe_running() is False)
 
     def fake_run_hit(*_a, **_k):
-        return R(b"TsBackup.exe                 1234 Console    1    50,000 K\r\n")
+        return R(b"Naru.exe                 1234 Console    1    50,000 K\r\n")
 
     with patch.object(pw.subprocess, "run", fake_run_hit):
-        check("TsBackup.exe present in output -> reports running",
+        check("Naru.exe present in output -> reports running",
               pw._tsbackup_exe_running() is True)
 
 
@@ -318,11 +318,11 @@ def test_run_once_state_machine():
 
     with tempfile.TemporaryDirectory() as tmp:
         install_dir = Path(tmp)
-        with patch.dict("os.environ", {"TSBACKUP_INSTALL_DIR": str(install_dir)}):
+        with patch.dict("os.environ", {"NARU_INSTALL_DIR": str(install_dir)}):
             check("no install dir at all -> no_install",
                   run_once(log) == "no_install")
 
-            (install_dir / "TsBackup.exe").write_bytes(b"old")
+            (install_dir / "Naru.exe").write_bytes(b"old")
             (install_dir / "VERSION").write_text("0.1.0")
 
             with patch("update_manager.__main__.fetch_latest_release", return_value=None):
@@ -330,8 +330,8 @@ def test_run_once_state_machine():
                       run_once(log) == "no_release")
 
             same = LatestRelease(
-                tag="v0.1.0", version=(0, 1, 0), asset_name="TsBackup.exe",
-                download_url="https://github.com/x/TsBackup.exe",
+                tag="v0.1.0", version=(0, 1, 0), asset_name="Naru.exe",
+                download_url="https://github.com/x/Naru.exe",
                 digest="sha256:" + "a" * 64,
             )
             with patch("update_manager.__main__.fetch_latest_release", return_value=same):
@@ -341,8 +341,8 @@ def test_run_once_state_machine():
             new_content = b"brand new exe content"
             digest = "sha256:" + hashlib.sha256(new_content).hexdigest()
             newer = LatestRelease(
-                tag="v0.2.0", version=(0, 2, 0), asset_name="TsBackup.exe",
-                download_url="https://github.com/x/TsBackup.exe", digest=digest,
+                tag="v0.2.0", version=(0, 2, 0), asset_name="Naru.exe",
+                download_url="https://github.com/x/Naru.exe", digest=digest,
             )
 
             def fake_urlopen(req, context=None, timeout=None):
@@ -361,7 +361,7 @@ def test_run_once_state_machine():
                 check("main window visible -> deferred_ui, exe untouched",
                       run_once(log) == "deferred_ui")
                 check("...and the old exe is still in place, not half-replaced",
-                      (install_dir / "TsBackup.exe").read_bytes() == b"old")
+                      (install_dir / "Naru.exe").read_bytes() == b"old")
 
             with patch("update_manager.__main__.fetch_latest_release", return_value=newer), \
                  patch("update_manager.__main__.main_window_visible", return_value=False), \
@@ -370,7 +370,7 @@ def test_run_once_state_machine():
                 check("process won't stop -> killed_failed, exe untouched",
                       run_once(log) == "killed_failed")
                 check("...and the old exe is still in place",
-                      (install_dir / "TsBackup.exe").read_bytes() == b"old")
+                      (install_dir / "Naru.exe").read_bytes() == b"old")
 
             with patch("update_manager.__main__.fetch_latest_release", return_value=newer), \
                  patch("update_manager.__main__.main_window_visible", return_value=False), \
@@ -380,7 +380,7 @@ def test_run_once_state_machine():
                 result = run_once(log)
                 check("everything lines up -> updated", result == "updated", result)
                 check("the exe now holds the new release's content",
-                      (install_dir / "TsBackup.exe").read_bytes() == new_content)
+                      (install_dir / "Naru.exe").read_bytes() == new_content)
 
             run_id = status_io.read_current_run_id(install_dir)
             check("the last run's status was actually persisted for the tray to poll",
